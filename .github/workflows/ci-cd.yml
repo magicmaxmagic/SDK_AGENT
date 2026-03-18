@@ -2,6 +2,7 @@ name: CI-CD
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
   push:
     branches: [main]
@@ -17,6 +18,7 @@ jobs:
   python-tests:
     name: Python Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,6 +40,7 @@ jobs:
   web-quality:
     name: Web Lint and Build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: apps/web
@@ -67,8 +70,11 @@ jobs:
   deploy-vercel:
     name: Deploy to Vercel (Production)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [python-tests, web-quality]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: production
     defaults:
       run:
         working-directory: apps/web
@@ -101,8 +107,11 @@ jobs:
   deploy-vercel-preview:
     name: Deploy to Vercel (Preview)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [python-tests, web-quality]
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork && secrets.VERCEL_TOKEN != '' && secrets.VERCEL_ORG_ID != '' && secrets.VERCEL_PROJECT_ID != ''
+    environment:
+      name: preview
     defaults:
       run:
         working-directory: apps/web

@@ -364,6 +364,15 @@ Secrets GitHub a configurer pour le deploy Vercel:
 - `VERCEL_ORG_ID`
 - `VERCEL_PROJECT_ID`
 
+Durcissement recommande (GitHub Settings):
+1. Branch protection sur `main`: activer `Require a pull request before merging`.
+2. Branch protection sur `main`: activer `Require status checks to pass before merging`.
+3. Branch protection sur `main`: ajouter `Python Tests` et `Web Lint and Build` comme required checks.
+4. Environment `production`: ajouter des `Required reviewers` (release managers / owners).
+5. Environment `production`: le job `Deploy to Vercel (Production)` attendra l'approbation avant de deployer.
+6. Environment `preview`: optionnel pour isoler les secrets preview.
+7. Environment `preview`: le job preview est ignore pour PR fork ou si secrets absents.
+
 Configuration Copilot partagee:
 - `.github/copilot-instructions.md`
 
