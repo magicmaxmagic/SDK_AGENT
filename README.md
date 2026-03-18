@@ -125,3 +125,50 @@ print(team["workflow"])
 - Enable/disable workflow stages (planning, testing, review, deploy)
 - Override workflow prompts per stage
 - Attach project plugins to adapt behavior per repository/domain
+
+## Web Monitoring Dashboard
+
+Install web dependencies:
+
+pip install -e .[web]
+
+Run the dashboard:
+
+uvicorn sdk_agent.web.main:app --reload
+
+Open:
+
+http://127.0.0.1:8000
+
+Useful endpoints:
+
+- GET /api/status
+- POST /api/runs/start
+- POST /api/runs/{run_id}/finish
+- POST /api/agents/{agent_name}
+
+Example status update payload:
+
+{"stage":"coding","progress":45,"message":"Implementing auth flow"}
+
+Automatic workflow tracking (no manual API calls):
+
+```python
+from sdk_agent import ProjectContext, build_software_team
+from sdk_agent.web.app import create_dashboard_app
+
+app = create_dashboard_app()
+tracker = app.state.tracker
+
+context = ProjectContext(
+  project_name="portfolio",
+  repo_path="/home/maxence/Documents/portfolio",
+)
+
+team = build_software_team(context=context, status_tracker=tracker)
+
+# When you run this, planner/developer/tester/reviewer/deployer statuses
+# are pushed automatically to the dashboard tracker.
+result = await team["workflow"].run("Build a new pricing page with tests")
+print(result["run_id"])
+```

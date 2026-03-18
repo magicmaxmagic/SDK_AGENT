@@ -87,6 +87,7 @@ def build_software_team(
     deployer_tools: list | None = None,
     team_config: TeamConfig | None = None,
     plugins: list[BaseProjectPlugin] | None = None,
+    status_tracker=None,
 ) -> dict:
     team_config = team_config or TeamConfig()
     plugins = plugins or []
@@ -158,6 +159,7 @@ def build_software_team(
         run_review=team_config.workflow.run_review,
         run_deploy=team_config.workflow.run_deploy,
         prompt_overrides=workflow_prompts,
+        status_tracker=status_tracker,
     )
 
     return {
