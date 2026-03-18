@@ -107,7 +107,7 @@ export OPENAI_API_KEY="YOUR_KEY"
 Main entrypoint:
 
 ~~~bash
-python -m sdk_agent.main <command> [options]
+uv run python -m sdk_agent.main <command> [options]
 ~~~
 
 Commands:
@@ -135,43 +135,43 @@ Common options:
 Feature flow on Next.js repo:
 
 ~~~bash
-python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --project-name portfolio --plugin nextjs --model gpt-5-codex feature "Add newsletter signup form"
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --project-name portfolio --plugin nextjs --model gpt-5-codex feature "Add newsletter signup form"
 ~~~
 
 Bugfix flow on Python repo:
 
 ~~~bash
-python -m sdk_agent.main --repo-path /home/maxence/Documents/api --project-name api --plugin python bugfix "Fix login redirect bug"
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/api --project-name api --plugin python bugfix "Fix login redirect bug"
 ~~~
 
 Validation-only flow:
 
 ~~~bash
-python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs validate
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs validate
 ~~~
 
 Review-only flow:
 
 ~~~bash
-python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs review
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs review
 ~~~
 
 Plan-only flow:
 
 ~~~bash
-python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs plan "Build admin dashboard"
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs plan "Build admin dashboard"
 ~~~
 
 Feature flow with git branch draft and optional commit preparation:
 
 ~~~bash
-python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs --branch-name feature/signup --allow-commit feature "Add signup form"
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs --branch-name feature/signup --allow-commit feature "Add signup form"
 ~~~
 
 Dry-run full simulation (no shell commands executed):
 
 ~~~bash
-python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs --dry-run feature "Add signup form"
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs --dry-run feature "Add signup form"
 ~~~
 
 ## Role Responsibilities
