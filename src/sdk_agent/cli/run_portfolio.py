@@ -65,6 +65,31 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--test-command", default="npm test")
     parser.add_argument("--lint-command", default="npm run lint")
     parser.add_argument("--enable-deploy", action="store_true")
+    parser.add_argument(
+        "--auto-commit",
+        action="store_true",
+        help="Automatically git add/commit all repository changes at the end of a successful run.",
+    )
+    parser.add_argument(
+        "--auto-push",
+        action="store_true",
+        help="Automatically git push after a successful run (uses --push-remote and --push-branch).",
+    )
+    parser.add_argument(
+        "--commit-message",
+        default="chore: apply sdk-agent automated changes",
+        help="Commit message used when --auto-commit is enabled.",
+    )
+    parser.add_argument(
+        "--push-remote",
+        default="origin",
+        help="Git remote used when --auto-push is enabled.",
+    )
+    parser.add_argument(
+        "--push-branch",
+        default=None,
+        help="Git branch used when --auto-push is enabled (defaults to current branch).",
+    )
     parser.add_argument("--max-iterations", type=int, default=5)
     parser.add_argument("--no-require-approval", action="store_true")
     parser.add_argument(
@@ -104,6 +129,89 @@ def _build_status_tracker(args: argparse.Namespace):
         return InMemoryStatusTracker(agent_names=["planner", "developer", "tester", "reviewer", "deployer"])
 
     return ApiStatusTracker(base_url=args.dashboard_url, fail_silently=True)
+
+
+def _git_run(args: argparse.Namespace, git_args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", args.repo_path, *git_args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _maybe_auto_git_actions(args: argparse.Namespace) -> tuple[int, dict]:
+    if not args.auto_commit and not args.auto_push:
+        return 0, {"enabled": False}
+
+    git_info: dict[str, object] = {
+        "enabled": True,
+        "auto_commit": args.auto_commit,
+        "auto_push": args.auto_push,
+        "committed": False,
+        "pushed": False,
+    }
+
+    in_repo = _git_run(args, ["rev-parse", "--is-inside-work-tree"])
+    if in_repo.returncode != 0 or in_repo.stdout.strip() != "true":
+        print(
+            f"Error: --auto-commit/--auto-push requires a git repository at {args.repo_path}.",
+            file=sys.stderr,
+        )
+        return 3, git_info
+
+    status = _git_run(args, ["status", "--porcelain"])
+    has_changes = bool(status.stdout.strip())
+    git_info["has_worktree_changes"] = has_changes
+
+    if args.auto_commit:
+        if has_changes:
+            add_all = _git_run(args, ["add", "-A"])
+            if add_all.returncode != 0:
+                print("Error: git add failed during auto-commit.", file=sys.stderr)
+                if add_all.stderr.strip():
+                    print(add_all.stderr.strip(), file=sys.stderr)
+                return 3, git_info
+
+            commit = _git_run(args, ["commit", "-m", args.commit_message])
+            if commit.returncode != 0:
+                print("Error: git commit failed during auto-commit.", file=sys.stderr)
+                if commit.stderr.strip():
+                    print(commit.stderr.strip(), file=sys.stderr)
+                return 3, git_info
+
+            git_info["committed"] = True
+            git_info["commit_message"] = args.commit_message
+        else:
+            git_info["commit_skipped"] = "no_changes"
+
+    if args.auto_push:
+        target_branch = args.push_branch
+        if target_branch is None:
+            branch = _git_run(args, ["rev-parse", "--abbrev-ref", "HEAD"])
+            if branch.returncode != 0:
+                print("Error: unable to determine current branch for auto-push.", file=sys.stderr)
+                return 3, git_info
+            target_branch = branch.stdout.strip()
+            if target_branch == "HEAD":
+                print(
+                    "Error: detached HEAD detected. Use --push-branch to set an explicit branch.",
+                    file=sys.stderr,
+                )
+                return 3, git_info
+
+        push = _git_run(args, ["push", args.push_remote, target_branch])
+        if push.returncode != 0:
+            print("Error: git push failed during auto-push.", file=sys.stderr)
+            if push.stderr.strip():
+                print(push.stderr.strip(), file=sys.stderr)
+            return 3, git_info
+
+        git_info["pushed"] = True
+        git_info["push_remote"] = args.push_remote
+        git_info["push_branch"] = target_branch
+
+    return 0, git_info
 
 
 def _run_codex_cli_workflow(args: argparse.Namespace, tracker) -> int:
@@ -175,6 +283,11 @@ def _run_codex_cli_workflow(args: argparse.Namespace, tracker) -> int:
             return completed.returncode
         tracker.update_agent(agent_name, f"{stage_key}:completed", 100, "done")
 
+    git_rc, git_info = _maybe_auto_git_actions(args)
+    if git_rc != 0:
+        tracker.finish_run(run.run_id, status="failed")
+        return git_rc
+
     tracker.finish_run(run.run_id, status="completed")
 
     print(
@@ -185,6 +298,7 @@ def _run_codex_cli_workflow(args: argparse.Namespace, tracker) -> int:
                 "request": args.request,
                 "status": "completed",
                 "run_id": run.run_id,
+                "git": git_info,
             },
             indent=2,
         )
@@ -295,6 +409,10 @@ async def _run_workflow(args: argparse.Namespace) -> int:
     )
 
     result = await team["workflow"].run(args.request)
+    git_rc, git_info = _maybe_auto_git_actions(args)
+    if git_rc != 0:
+        return git_rc
+
     snapshot = tracker.snapshot()
 
     output = {
@@ -307,6 +425,7 @@ async def _run_workflow(args: argparse.Namespace) -> int:
         "max_iterations": max(1, args.max_iterations),
         "require_approval": not args.no_require_approval,
         "result": result,
+        "git": git_info,
         "agent_status": snapshot["agents"],
         "runs": snapshot["runs"],
     }
@@ -318,3 +437,7 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
     raise SystemExit(asyncio.run(_run_workflow(args)))
+
+
+if __name__ == "__main__":
+    main()
