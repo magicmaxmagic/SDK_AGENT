@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import base64
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 
 @dataclass(slots=True)
@@ -86,7 +91,33 @@ class JiraTicketConnector:
                 return TicketValidationResult(True, "validated by jira connector mock file", normalized_ticket_id=normalized_id, provider=self.name)
             return TicketValidationResult(False, f"ticket '{normalized_id}' not found in jira mock file", provider=self.name)
 
-        return TicketValidationResult(False, "jira connector requires external client configuration", provider=self.name)
+        base_url = str(self.settings.get("base_url", "")).strip()
+        if not base_url:
+            return TicketValidationResult(False, "jira connector requires external client configuration", provider=self.name)
+
+        path_template = str(self.settings.get("issue_path", "/rest/api/3/issue/{ticket_id}"))
+        issue_url = f"{base_url.rstrip('/')}{path_template.format(ticket_id=quote(normalized_id, safe=''))}"
+        headers = _build_auth_headers(
+            settings=self.settings,
+            token_env_default="JIRA_API_TOKEN",
+            user_env_default="JIRA_USER_EMAIL",
+            password_env_default="JIRA_API_TOKEN",
+            default_auth_mode="basic",
+        )
+        payload, error = _http_get_json(issue_url, headers=headers, timeout_seconds=_timeout(self.settings))
+        if error is not None:
+            return TicketValidationResult(False, f"jira connector request failed: {error}", provider=self.name)
+
+        if isinstance(payload, dict) and payload.get("key"):
+            return TicketValidationResult(
+                True,
+                "validated by jira connector HTTP API",
+                normalized_ticket_id=normalized_id,
+                provider=self.name,
+                metadata={"url": issue_url, "key": payload.get("key")},
+            )
+
+        return TicketValidationResult(False, f"ticket '{normalized_id}' not found in jira response", provider=self.name)
 
 
 @dataclass(slots=True)
@@ -108,7 +139,48 @@ class ServiceNowTicketConnector:
                 return TicketValidationResult(True, "validated by servicenow connector mock file", normalized_ticket_id=normalized_id, provider=self.name)
             return TicketValidationResult(False, f"ticket '{normalized_id}' not found in servicenow mock file", provider=self.name)
 
-        return TicketValidationResult(False, "servicenow connector requires external client configuration", provider=self.name)
+        base_url = str(self.settings.get("base_url", "")).strip()
+        if not base_url:
+            return TicketValidationResult(False, "servicenow connector requires external client configuration", provider=self.name)
+
+        path_template = str(
+            self.settings.get(
+                "issue_path",
+                "/api/now/table/change_request?sysparm_query=number={ticket_id}&sysparm_limit=1",
+            )
+        )
+        issue_url = f"{base_url.rstrip('/')}{path_template.format(ticket_id=quote(normalized_id, safe=''))}"
+        headers = _build_auth_headers(
+            settings=self.settings,
+            token_env_default="SERVICENOW_API_TOKEN",
+            user_env_default="SERVICENOW_USER",
+            password_env_default="SERVICENOW_PASSWORD",
+            default_auth_mode="basic",
+        )
+        payload, error = _http_get_json(issue_url, headers=headers, timeout_seconds=_timeout(self.settings))
+        if error is not None:
+            return TicketValidationResult(False, f"servicenow connector request failed: {error}", provider=self.name)
+
+        if isinstance(payload, dict):
+            result = payload.get("result")
+            if isinstance(result, list) and result:
+                return TicketValidationResult(
+                    True,
+                    "validated by servicenow connector HTTP API",
+                    normalized_ticket_id=normalized_id,
+                    provider=self.name,
+                    metadata={"url": issue_url, "match_count": len(result)},
+                )
+            if isinstance(result, dict) and result:
+                return TicketValidationResult(
+                    True,
+                    "validated by servicenow connector HTTP API",
+                    normalized_ticket_id=normalized_id,
+                    provider=self.name,
+                    metadata={"url": issue_url, "match_count": 1},
+                )
+
+        return TicketValidationResult(False, f"ticket '{normalized_id}' not found in servicenow response", provider=self.name)
 
 
 @dataclass(slots=True)
@@ -159,3 +231,71 @@ def _load_mock_registry(path: Path) -> set[str]:
         if isinstance(values, list):
             return {str(item).strip().upper() for item in values if str(item).strip()}
     return set()
+
+
+def _timeout(settings: dict[str, Any]) -> float:
+    raw = settings.get("timeout_seconds", 10)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 10.0
+    return max(1.0, value)
+
+
+def _build_auth_headers(
+    *,
+    settings: dict[str, Any],
+    token_env_default: str,
+    user_env_default: str,
+    password_env_default: str,
+    default_auth_mode: str,
+) -> dict[str, str]:
+    headers = {"Accept": "application/json"}
+    mode = str(settings.get("auth_mode", default_auth_mode)).strip().lower()
+    token_env = str(settings.get("token_env", token_env_default))
+    user_env = str(settings.get("user_env", user_env_default))
+    password_env = str(settings.get("password_env", password_env_default))
+
+    if mode == "bearer":
+        token = os.getenv(token_env, "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+    if mode == "basic":
+        username = os.getenv(user_env, "").strip()
+        password = os.getenv(password_env, "").strip()
+        if username and password:
+            raw = f"{username}:{password}".encode("utf-8")
+            encoded = base64.b64encode(raw).decode("ascii")
+            headers["Authorization"] = f"Basic {encoded}"
+        return headers
+
+    return headers
+
+
+def _http_get_json(url: str, *, headers: dict[str, str], timeout_seconds: float) -> tuple[dict[str, Any] | list[Any] | None, str | None]:
+    request = Request(url=url, headers=headers, method="GET")
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            status = getattr(response, "status", 200)
+            body = response.read().decode("utf-8")
+    except HTTPError as exc:
+        return None, f"HTTP {exc.code}"
+    except URLError as exc:
+        return None, f"network error: {exc.reason}"
+    except OSError as exc:
+        return None, f"transport error: {exc}"
+
+    if status < 200 or status >= 300:
+        return None, f"HTTP {status}"
+
+    if not body.strip():
+        return None, "empty response"
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return None, "invalid JSON response"
+    if not isinstance(payload, (dict, list)):
+        return None, "unexpected payload type"
+    return payload, None

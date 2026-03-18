@@ -212,6 +212,30 @@ Audit events are SIEM-compatible and versioned (`schema_version=siem.audit.v1`, 
 
 Ticket validation now runs through an external connector (`mock`, `jira`, `servicenow`, or `composite`) configured by plugin/project policy. CLI can override via `--ticket-connector` and `--ticket-connector-settings`.
 
+Example Jira HTTP connector override:
+
+~~~bash
+export JIRA_USER_EMAIL="bot@example.com"
+export JIRA_API_TOKEN="***"
+uv run python -m sdk_agent.main \
+	--repo-path /home/maxence/Documents/portfolio \
+	--ticket-connector jira \
+	--ticket-connector-settings '{"base_url":"https://jira.example.com","auth_mode":"basic","accepted_sources":["jira"]}' \
+	approve-production --run-id run-abc123 --approved-by oncall.lead --ticket CHG-4242 --ticket-source jira --reason "CAB approved"
+~~~
+
+Example ServiceNow HTTP connector override:
+
+~~~bash
+export SERVICENOW_USER="agent"
+export SERVICENOW_PASSWORD="***"
+uv run python -m sdk_agent.main \
+	--repo-path /home/maxence/Documents/portfolio \
+	--ticket-connector servicenow \
+	--ticket-connector-settings '{"base_url":"https://snow.example.com","auth_mode":"basic","accepted_sources":["itsm","cab"]}' \
+	approve-staging --run-id run-abc123 --approved-by qa.lead --ticket INC-4242 --ticket-source itsm --reason "staging gate"
+~~~
+
 Approval quorum is project-policy driven per target: staging and production thresholds come from plugin defaults and can be overridden from CLI when needed. Approval validity defaults to 120 minutes.
 
 Dry-run simulation:
