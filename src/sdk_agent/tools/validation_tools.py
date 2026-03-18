@@ -6,8 +6,8 @@ from sdk_agent.tools.shell_tools import safe_run_command
 
 
 def run_lint(context: ProjectContext) -> CommandResult:
-    return safe_run_command(context, context.lint_command)
+    return safe_run_command(context, context.lint_command, role="tester")
 
 
 def run_tests(context: ProjectContext) -> CommandResult:
-    return safe_run_command(context, context.test_command)
+    return safe_run_command(context, context.test_command, role="tester")

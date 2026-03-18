@@ -26,6 +26,11 @@ def _base_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default="gpt-5-codex")
     parser.add_argument("--artifacts-dir", default=".sdk_agent_runs")
     parser.add_argument("--max-fix-iterations", type=int, default=2)
+    parser.add_argument("--branch-name", default=None)
+    parser.add_argument("--allow-commit", action="store_true")
+    parser.add_argument("--allow-staging-deploy", action="store_true")
+    parser.add_argument("--enable-tester-mcp", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="Simulate full workflow without executing shell commands")
 
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -58,9 +63,17 @@ async def _run_async(args: argparse.Namespace) -> int:
     )
 
     team = build_team(plugin=plugin, model=args.model, max_fix_iterations=args.max_fix_iterations)
+    team.workflow.context.dry_run = args.dry_run
 
     request = getattr(args, "request", "") or f"{args.command} workflow"
-    state = await team.workflow.run(flow=_flow_from_command(args.command), request=request)
+    state = await team.workflow.run(
+        flow=_flow_from_command(args.command),
+        request=request,
+        branch_name=args.branch_name,
+        allow_commit=args.allow_commit,
+        allow_staging_deploy=args.allow_staging_deploy,
+        enable_tester_mcp=args.enable_tester_mcp,
+    )
     print(json.dumps(state.to_dict(), indent=2, default=str))
     return 0
 

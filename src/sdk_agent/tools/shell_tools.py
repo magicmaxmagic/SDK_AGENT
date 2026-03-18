@@ -10,8 +10,20 @@ from sdk_agent.models import CommandResult
 LOGGER = get_logger("tools.shell")
 
 
-def safe_run_command(context: ProjectContext, command: str) -> CommandResult:
-    argv = validate_shell_command(command, context.allowed_commands)
+def safe_run_command(context: ProjectContext, command: str, role: str | None = None) -> CommandResult:
+    argv = validate_shell_command(command, context.allowed_commands, role=role)
+    if context.dry_run:
+        LOGGER.info(
+            "command_simulated",
+            extra={"extra_fields": {"command": command, "role": role, "dry_run": True}},
+        )
+        return CommandResult(
+            command=command,
+            exit_code=0,
+            stdout=f"[dry-run] skipped execution: {' '.join(argv)}",
+            stderr="",
+        )
+
     completed = subprocess.run(
         argv,
         cwd=context.repo_path,
@@ -21,7 +33,7 @@ def safe_run_command(context: ProjectContext, command: str) -> CommandResult:
     )
     LOGGER.info(
         "command_executed",
-        extra={"extra_fields": {"command": command, "exit_code": completed.returncode}},
+        extra={"extra_fields": {"command": command, "exit_code": completed.returncode, "role": role}},
     )
     return CommandResult(
         command=command,

@@ -7,20 +7,24 @@ from sdk_agent.tools.shell_tools import safe_run_command
 
 
 def git_status(context: ProjectContext) -> CommandResult:
-    return safe_run_command(context, "git status --short")
+    return safe_run_command(context, "git status --short", role="reviewer")
 
 
 def git_diff(context: ProjectContext) -> CommandResult:
-    return safe_run_command(context, "git diff")
+    return safe_run_command(context, "git diff", role="reviewer")
+
+
+def git_current_branch(context: ProjectContext) -> CommandResult:
+    return safe_run_command(context, "git rev-parse --abbrev-ref HEAD", role="reviewer")
 
 
 def git_create_branch(context: ProjectContext, branch_name: str) -> CommandResult:
     validate_branch_name(branch_name)
-    return safe_run_command(context, f"git checkout -b {branch_name}")
+    return safe_run_command(context, f"git checkout -b {branch_name}", role="developer")
 
 
-def collect_changed_files(context: ProjectContext) -> list[str]:
-    result = safe_run_command(context, "git status --short")
+def git_collect_changed_files(context: ProjectContext) -> list[str]:
+    result = safe_run_command(context, "git status --short", role="reviewer")
     files: list[str] = []
     for line in result.stdout.splitlines():
         cleaned = line.strip()
@@ -30,3 +34,24 @@ def collect_changed_files(context: ProjectContext) -> list[str]:
         if len(parts) == 2:
             files.append(parts[1])
     return files
+
+
+def collect_changed_files(context: ProjectContext) -> list[str]:
+    return git_collect_changed_files(context)
+
+
+def git_prepare_commit_message(request: str, changed_files: list[str]) -> str:
+    scope = changed_files[0] if changed_files else "repo"
+    return f"feat({scope}): {request[:72]}"
+
+
+def git_prepare_pr_body(request: str, changed_files: list[str], validation_summary: str) -> str:
+    lines = [
+        "## Summary",
+        request,
+        "",
+        "## Changed Files",
+    ]
+    lines.extend(f"- {item}" for item in changed_files or ["- none"])
+    lines.extend(["", "## Validation", validation_summary])
+    return "\n".join(lines)

@@ -16,3 +16,8 @@ def test_guardrails_reject_not_allowlisted() -> None:
 def test_guardrails_accept_allowlisted() -> None:
     argv = validate_shell_command("git status --short", ["git status", "git diff"])
     assert argv[0] == "git"
+
+
+def test_guardrails_role_aware_block() -> None:
+    with pytest.raises(PermissionError):
+        validate_shell_command("pytest -q", ["pytest"], role="reviewer")

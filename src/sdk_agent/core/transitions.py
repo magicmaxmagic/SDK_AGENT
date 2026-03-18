@@ -4,7 +4,7 @@ from sdk_agent.models import ReviewFinding, Severity, ValidationSummary, Workflo
 
 
 def has_critical_findings(findings: list[ReviewFinding]) -> bool:
-    return any(f.severity in {Severity.HIGH, Severity.CRITICAL} for f in findings)
+    return any(f.blocking or f.severity in {Severity.HIGH, Severity.CRITICAL} for f in findings)
 
 
 def should_rework_from_validation(validation: ValidationSummary) -> bool:
@@ -16,4 +16,4 @@ def should_rework_from_review(findings: list[ReviewFinding]) -> bool:
 
 
 def can_retry(state: WorkflowState, max_iterations: int) -> bool:
-    return state.iteration < max_iterations
+    return state.fix_iteration_count < max_iterations

@@ -17,6 +17,17 @@ from sdk_agent.roles import (
 )
 
 
+ROLE_CAPABILITY_MATRIX: dict[str, dict[str, bool]] = {
+    "planner": {"mcp": False, "shell": False, "write": False},
+    "developer": {"mcp": True, "shell": True, "write": True},
+    "tester": {"mcp": False, "shell": True, "write": False},
+    "reviewer": {"mcp": False, "shell": False, "write": False},
+    "release_manager": {"mcp": False, "shell": False, "write": False},
+    "deployer": {"mcp": False, "shell": False, "write": False},
+    "triage": {"mcp": False, "shell": False, "write": False},
+}
+
+
 @dataclass(slots=True)
 class AgentTeam:
     planner: object
@@ -41,6 +52,20 @@ def build_team(plugin: BaseProjectPlugin, model: str, max_fix_iterations: int = 
     release_manager = make_release_manager_agent(factory=factory, plugin=plugin)
     deployer = make_deployer_agent(factory=factory, plugin=plugin)
     triage = make_triage_agent(factory=factory, plugin=plugin)
+
+    overrides = context.role_capability_overrides
+    for role_name, agent in {
+        "planner": planner,
+        "developer": developer,
+        "tester": tester,
+        "reviewer": reviewer,
+        "release_manager": release_manager,
+        "deployer": deployer,
+        "triage": triage,
+    }.items():
+        capabilities = dict(ROLE_CAPABILITY_MATRIX[role_name])
+        capabilities.update(overrides.get(role_name, {}))
+        setattr(agent, "capabilities", capabilities)
 
     workflow = WorkflowEngine(
         context=context,

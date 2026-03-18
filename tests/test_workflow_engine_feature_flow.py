@@ -1,0 +1,113 @@
+import asyncio
+from contextlib import asynccontextmanager
+from pathlib import Path
+from types import SimpleNamespace
+
+from sdk_agent.context import ProjectContext
+from sdk_agent.core.artifacts import ArtifactManager
+from sdk_agent.core.workflow_engine import WorkflowEngine
+from sdk_agent.models import CommandResult, FlowType, WorkflowStatus
+from sdk_agent.plugins import GenericProjectPlugin
+
+
+class DummyAgent:
+    def __init__(self, name: str):
+        self.name = name
+        self.mcp_servers = []
+
+
+class StubRunner:
+    async def run(self, agent, prompt: str) -> str:  # noqa: ARG002
+        mapping = {
+            "planner": "Plan: implement safely",
+            "developer": "Implemented changes",
+            "reviewer": "No blocking issues | low | none | false | none",
+            "release": "Release notes content",
+            "deployer": "Staging deployment plan",
+        }
+        return mapping[agent.name]
+
+
+@asynccontextmanager
+async def fake_codex_server():
+    yield object()
+
+
+def _engine(tmp_path: Path) -> WorkflowEngine:
+    plugin = GenericProjectPlugin(project_name="demo", repo_path=tmp_path)
+    context = ProjectContext(
+        project_name="demo",
+        repo_path=tmp_path,
+        lint_command="pytest -q",
+        test_command="pytest -q",
+        allowed_commands=[
+            "git status",
+            "git diff",
+            "git rev-parse",
+            "git checkout -b",
+        ],
+        allow_staging_deploy=True,
+    )
+
+    return WorkflowEngine(
+        context=context,
+        plugin=plugin,
+        artifact_manager=ArtifactManager(context=context),
+        planner=DummyAgent("planner"),
+        developer=DummyAgent("developer"),
+        tester=DummyAgent("tester"),
+        reviewer=DummyAgent("reviewer"),
+        release_manager=DummyAgent("release"),
+        deployer=DummyAgent("deployer"),
+        triage=DummyAgent("triage"),
+        runner=StubRunner(),
+        max_fix_iterations=2,
+    )
+
+
+def test_feature_flow_success(monkeypatch, tmp_path: Path) -> None:
+    from sdk_agent.core import workflow_engine as engine_mod
+
+    engine = _engine(tmp_path)
+
+    monkeypatch.setattr(engine_mod, "codex_mcp_server", fake_codex_server)
+    monkeypatch.setattr(
+        engine_mod,
+        "run_lint",
+        lambda _ctx: CommandResult(command="lint", exit_code=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(
+        engine_mod,
+        "run_tests",
+        lambda _ctx: CommandResult(command="test", exit_code=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(engine_mod, "git_collect_changed_files", lambda _ctx: ["src/app.py"])
+    monkeypatch.setattr(
+        engine_mod,
+        "git_diff",
+        lambda _ctx: CommandResult(command="git diff", exit_code=0, stdout="diff", stderr=""),
+    )
+    monkeypatch.setattr(
+        engine_mod,
+        "prepare_git_workflow",
+        lambda **_: SimpleNamespace(
+            branch_name="feature/add-signup",
+            changed_files=["src/app.py"],
+            commit_message="feat: add signup",
+            pr_body="PR body",
+        ),
+    )
+
+    state = asyncio.run(
+        engine.run(
+            flow=FlowType.FEATURE,
+            request="Add signup",
+            branch_name="feature/add-signup",
+            allow_commit=False,
+            allow_staging_deploy=True,
+        )
+    )
+
+    assert state.final_status == WorkflowStatus.COMPLETED
+    assert state.changed_files == ["src/app.py"]
+    assert state.branch_name is not None

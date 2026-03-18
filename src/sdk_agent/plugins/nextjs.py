@@ -4,10 +4,15 @@ from sdk_agent.plugins.base import BaseProjectPlugin
 
 
 class NextJsPlugin(BaseProjectPlugin):
+    def role_capability_overrides(self) -> dict[str, dict[str, bool]]:
+        return {"tester": {"mcp": False}}
+
     def allowed_commands(self) -> list[str]:
         return [
             "git status",
             "git diff",
+            "git rev-parse",
+            "git checkout -b",
             "npm test",
             "npm run lint",
             "npm run build",

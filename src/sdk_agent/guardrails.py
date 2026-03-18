@@ -13,7 +13,19 @@ FORBIDDEN_SHELL_TOKENS = {
     "dd if=",
     "curl | sh",
     "wget | sh",
-    "git push origin main",
+    "git push",
+    "git reset --hard",
+    "git checkout --",
+    "mkfs",
+    "chmod -R 777 /",
+}
+
+
+ROLE_FORBIDDEN_TOKENS = {
+    "planner": {"git checkout", "git commit"},
+    "reviewer": {"git checkout", "git commit", "npm", "pytest", "ruff"},
+    "release_manager": {"git checkout", "git commit", "npm", "pytest", "ruff"},
+    "deployer": {"git push", "kubectl apply", "helm upgrade"},
 }
 
 
@@ -37,9 +49,16 @@ def is_command_allowed(command: str, allowlist: list[str]) -> bool:
     return any(normalized == allowed or normalized.startswith(f"{allowed} ") for allowed in allowlist)
 
 
-def validate_shell_command(command: str, allowlist: list[str]) -> list[str]:
+def validate_shell_command(command: str, allowlist: list[str], role: str | None = None) -> list[str]:
     if not command.strip():
         raise ValueError("Empty command is not allowed.")
+
+    normalized = " ".join(command.split())
+
+    if role:
+        for forbidden in ROLE_FORBIDDEN_TOKENS.get(role, set()):
+            if forbidden in normalized:
+                raise PermissionError(f"Role '{role}' cannot execute command: {command}")
 
     if not is_command_allowed(command, allowlist):
         raise PermissionError(f"Command is not allowed by guardrails: {command}")

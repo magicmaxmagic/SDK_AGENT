@@ -14,5 +14,5 @@ def test_imports_and_public_models() -> None:
         artifacts_path=context.resolved_artifact_root(),
     )
 
-    assert state.flow == FlowType.PLAN
+    assert state.workflow_kind == FlowType.PLAN
     assert state.original_request == "Create rollout plan"

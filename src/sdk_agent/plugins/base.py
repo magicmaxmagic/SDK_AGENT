@@ -15,7 +15,17 @@ class BaseProjectPlugin:
     artifact_root: Path = Path(".sdk_agent_runs")
 
     def allowed_commands(self) -> list[str]:
-        return ["git status", "git diff", "pytest", "ruff check", "npm test", "npm run lint"]
+        return [
+            "git status",
+            "git diff",
+            "git rev-parse",
+            "git checkout -b",
+            "pytest",
+            "ruff check",
+            "npm test",
+            "npm run lint",
+            "python -m compileall",
+        ]
 
     def lint_command(self) -> str:
         return "python -m compileall -q src tests"
@@ -36,15 +46,21 @@ class BaseProjectPlugin:
             "Never deploy to production automatically.",
         ]
 
+    def role_capability_overrides(self) -> dict[str, dict[str, bool]]:
+        return {}
+
     def to_context(self) -> ProjectContext:
+        deploy_staging = self.deploy_staging_command()
         return ProjectContext(
             project_name=self.project_name,
             repo_path=self.repo_path,
             lint_command=self.lint_command(),
             test_command=self.test_command(),
             build_command=self.build_command(),
-            deploy_staging_command=self.deploy_staging_command(),
+            deploy_staging_command=deploy_staging,
+            allow_staging_deploy=bool(deploy_staging),
             artifact_root=self.artifact_root,
             project_rules=self.project_rules(),
             allowed_commands=self.allowed_commands(),
+            role_capability_overrides=self.role_capability_overrides(),
         )

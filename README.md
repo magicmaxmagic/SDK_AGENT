@@ -124,6 +124,11 @@ Common options:
 - `--model`
 - `--artifacts-dir`
 - `--max-fix-iterations`
+- `--branch-name`
+- `--allow-commit`
+- `--allow-staging-deploy`
+- `--enable-tester-mcp`
+- `--dry-run`
 
 ## Example Commands
 
@@ -157,6 +162,18 @@ Plan-only flow:
 python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs plan "Build admin dashboard"
 ~~~
 
+Feature flow with git branch draft and optional commit preparation:
+
+~~~bash
+python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs --branch-name feature/signup --allow-commit feature "Add signup form"
+~~~
+
+Dry-run full simulation (no shell commands executed):
+
+~~~bash
+python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs --dry-run feature "Add signup form"
+~~~
+
 ## Role Responsibilities
 
 Planner:
@@ -175,7 +192,7 @@ Tester:
 
 Reviewer:
 - inspects diffs and changed files
-- reports severity-based findings
+- reports structured findings (`title`, `severity`, `file_path`, `recommendation`, `blocking`)
 - read-only reviewer behavior
 
 ReleaseManager:
@@ -213,10 +230,14 @@ Built-in plugins:
 Every run writes outputs under:
 
 - `.sdk_agent_runs/<task_id>/plan.md`
+- `.sdk_agent_runs/<task_id>/changed_files.json`
+- `.sdk_agent_runs/<task_id>/lint_report.json`
 - `.sdk_agent_runs/<task_id>/test_report.json`
-- `.sdk_agent_runs/<task_id>/review_report.md`
+- `.sdk_agent_runs/<task_id>/review_report.json`
 - `.sdk_agent_runs/<task_id>/release_notes.md`
 - `.sdk_agent_runs/<task_id>/deploy_plan.md`
+- `.sdk_agent_runs/<task_id>/commit_message.txt`
+- `.sdk_agent_runs/<task_id>/pr_draft.md`
 - `.sdk_agent_runs/<task_id>/final_summary.json`
 
 ## Guardrails
@@ -225,8 +246,9 @@ Enforced defaults include:
 - repository sandbox path checks
 - shell command allowlist per plugin
 - rejection of destructive commands
+- role-aware command restrictions
 - no automatic production deploy
-- no automatic push to main in core workflow
+- no git push from workflow
 - artifact path sandboxing
 
 ## Local Development and Tests

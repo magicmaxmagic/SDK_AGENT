@@ -26,3 +26,9 @@ class WorkflowStateStore:
 
     def set_deploy_plan(self, deploy_plan: str) -> None:
         self.state.deploy_plan = deploy_plan
+
+    def set_fix_iteration_reason(self, reason: str) -> None:
+        self.state.fix_iteration_reason = reason
+
+    def require_human_approval(self, required: bool) -> None:
+        self.state.human_approval_required = required
