@@ -97,9 +97,12 @@ Per run outputs under `.sdk_agent_runs/<run_id>/` include:
 - `test_report.json`
 - `review_report.json`
 - `security_review.json`
+- `security_report.json`
 - `release_notes.md`
 - `deploy_plan.md`
 - `rollback_plan.md`
+- `health_check.sh`
+- `evaluation_report.json`
 - `final_summary.json`
 
 ## CLI Commands

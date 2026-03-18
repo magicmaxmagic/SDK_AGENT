@@ -75,3 +75,18 @@ def test_inspect_graph_and_run(tmp_path: Path) -> None:
     assert run_payload["run_id"] == state.run_id
     assert "execution_history" in run_payload
     assert "graph" in run_payload
+    assert run_payload["evaluation"] is not None
+    assert (tmp_path / ".sdk_agent_runs" / state.run_id / "evaluation_report.json").exists()
+
+
+def test_healthcheck_and_security_report_helpers(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    state = asyncio.run(engine.run(flow=FlowType.PLAN, request="Plan work"))
+
+    engine._write_health_check_script(state, target="staging")
+    engine._record_security_review(state, [])
+
+    run_dir = tmp_path / ".sdk_agent_runs" / state.run_id
+    assert (run_dir / "health_check.sh").exists()
+    assert (run_dir / "security_review.json").exists()
+    assert (run_dir / "security_report.json").exists()

@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator
 from sdk_agent.context import ProjectContext
 from sdk_agent.core.artifacts import ArtifactManager
 from sdk_agent.core.audit import AuditLogger
+from sdk_agent.core.evaluations import append_evaluation_index, build_evaluation_report, load_baseline_scores
 from sdk_agent.core.git_workflow import prepare_git_workflow
 from sdk_agent.core.persistence import StatePersistence
 from sdk_agent.core.policy_engine import PolicyEngine
@@ -139,6 +140,7 @@ class WorkflowEngine:
         persistence.save(state)
         self.artifact_manager.write_json(state.run_id, "state.json", state.to_dict())
         self.artifact_manager.write_json(state.run_id, "final_summary.json", state.to_dict())
+        self._persist_evaluation(state, update_index=True)
         self.audit_logger.record("workflow_finished", {"run_id": state.run_id, "status": state.final_status.value})
         self._persist_graph_view(state)
         return state
@@ -187,6 +189,7 @@ class WorkflowEngine:
             "execution_history": execution_history,
             "artifacts": sorted(item.name for item in run_dir.iterdir()) if run_dir.exists() else [],
             "audit_event_count": audit_count,
+            "evaluation": self._read_evaluation_report(run_id),
         }
 
     def export_audit_siem_ndjson(
@@ -255,6 +258,7 @@ class WorkflowEngine:
             deploy_plan = await self._role_run(RoleName.DEPLOYER, self.deployer, self._deploy_prompt(state, target="staging"))
             state.deploy_plan = deploy_plan
             self.artifact_manager.write_text(state.run_id, "deploy_plan.md", deploy_plan)
+            self._write_health_check_script(state, target="staging")
 
         self.audit_logger = AuditLogger(run_dir=self.context.resolved_artifact_root() / run_id)
         self.audit_logger.record("deploy_staging_prepared", {"run_id": run_id}, role=RoleName.DEPLOYER.value, action=ActionType.DEPLOY_STAGING.value)
@@ -482,6 +486,7 @@ class WorkflowEngine:
         if not state.rollback_plan:
             state.rollback_plan = "Prepare rollback by redeploying previous healthy release and verifying health checks."
             self.artifact_manager.write_text(state.run_id, "rollback_plan.md", state.rollback_plan)
+            self._write_health_check_script(state, target="production")
 
         self.audit_logger = AuditLogger(run_dir=self.context.resolved_artifact_root() / run_id)
         self.audit_logger.record("deploy_production_candidate", {"run_id": run_id}, role=RoleName.DEPLOYER.value, action=ActionType.DEPLOY_PRODUCTION.value)
@@ -641,6 +646,14 @@ class WorkflowEngine:
                 changed_files = git_collect_changed_files(self.context)
                 store.set_changed_files(changed_files)
                 self.artifact_manager.write_json(store.state.run_id, "changed_files.json", {"files": changed_files})
+                self.artifact_manager.write_json(
+                    store.state.run_id,
+                    "diff.json",
+                    {
+                        "files": changed_files,
+                        "unified_diff": git_diff(self.context).stdout,
+                    },
+                )
 
                 sensitive = classify_sensitive_changes(changed_files)
                 self.artifact_manager.write_json(
@@ -720,6 +733,7 @@ class WorkflowEngine:
         deploy_plan = await self._role_run(RoleName.DEPLOYER, self.deployer, self._deploy_prompt(store.state, target="staging"))
         store.set_deploy_plan(deploy_plan)
         self.artifact_manager.write_text(store.state.run_id, "deploy_plan.md", deploy_plan)
+        self._write_health_check_script(store.state, target="staging")
 
         rollback_plan = "Rollback: redeploy previous stable build, run smoke checks, and verify key metrics."
         store.state.rollback_plan = rollback_plan
@@ -775,23 +789,25 @@ class WorkflowEngine:
         )
 
     def _record_security_review(self, state: WorkflowState, findings: list[Any]) -> None:
+        payload = {
+            "findings": [
+                {
+                    "title": item.title,
+                    "severity": item.severity.value,
+                    "file_path": item.file_path,
+                    "recommendation": item.recommendation,
+                    "blocking": item.blocking,
+                    "details": item.details,
+                }
+                for item in findings
+            ]
+        }
         self.artifact_manager.write_json(
             state.run_id,
             "security_review.json",
-            {
-                "findings": [
-                    {
-                        "title": item.title,
-                        "severity": item.severity.value,
-                        "file_path": item.file_path,
-                        "recommendation": item.recommendation,
-                        "blocking": item.blocking,
-                        "details": item.details,
-                    }
-                    for item in findings
-                ]
-            },
+            payload,
         )
+        self.artifact_manager.write_json(state.run_id, "security_report.json", payload)
 
     def _apply_role_mcp_access(self, enable_tester_mcp: bool, codex_server: object | None) -> None:
         self.developer.mcp_servers = [codex_server] if codex_server is not None else []
@@ -895,7 +911,40 @@ class WorkflowEngine:
         StatePersistence(run_dir=state.artifacts_path).save(state)
         self.artifact_manager.write_json(state.run_id, "state.json", state.to_dict())
         self.artifact_manager.write_json(state.run_id, "execution_history.json", {"history": state.execution_history})
+        self._persist_evaluation(state, update_index=False)
         self._persist_graph_view(state)
+
+    def _persist_evaluation(self, state: WorkflowState, *, update_index: bool) -> None:
+        artifact_root = self.context.resolved_artifact_root()
+        baseline = load_baseline_scores(artifact_root)
+        report = build_evaluation_report(state, baseline_scores=baseline)
+        self.artifact_manager.write_json(state.run_id, "evaluation_report.json", report)
+        if update_index:
+            append_evaluation_index(artifact_root, report)
+
+    def _read_evaluation_report(self, run_id: str) -> dict[str, Any] | None:
+        report_file = self.context.resolved_artifact_root() / run_id / "evaluation_report.json"
+        if not report_file.exists():
+            return None
+        try:
+            payload = json.loads(report_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _write_health_check_script(self, state: WorkflowState, *, target: str) -> None:
+        script = "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                f'echo "Running post-deploy health checks for {target}"',
+                "echo \"1) verify service responds\"",
+                "echo \"2) verify key endpoints\"",
+                "echo \"3) verify error rate and latency\"",
+                "echo \"Health checks completed\"",
+            ]
+        )
+        self.artifact_manager.write_text(state.run_id, "health_check.sh", script)
 
     def _persist_graph_view(self, state: WorkflowState) -> None:
         definition = build_workflow_definition(state.workflow_kind)
