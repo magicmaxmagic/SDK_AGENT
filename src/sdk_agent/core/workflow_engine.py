@@ -166,10 +166,15 @@ class WorkflowEngine:
             max_file_size_bytes=max_file_size_bytes,
         )
 
-    def verify_audit_chain(self, run_id: str, *, include_siem_exports: bool = True) -> dict[str, Any]:
+    def verify_audit_chain(self, run_id: str, *, include_siem_exports: bool = True, strict: bool = False) -> dict[str, Any]:
         run_dir = self.context.resolved_artifact_root() / run_id
         logger = AuditLogger(run_dir=run_dir)
-        return logger.verify_chain(include_siem_exports=include_siem_exports)
+        return logger.verify_chain(include_siem_exports=include_siem_exports, strict=strict)
+
+    def repair_audit_chain(self, run_id: str, *, include_siem_exports: bool = True) -> dict[str, Any]:
+        run_dir = self.context.resolved_artifact_root() / run_id
+        logger = AuditLogger(run_dir=run_dir)
+        return logger.repair_chain(include_siem_exports=include_siem_exports)
 
     async def deploy_staging(self, run_id: str) -> WorkflowState:
         state = self.status(run_id)

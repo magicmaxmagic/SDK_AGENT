@@ -112,7 +112,8 @@ Main operational commands:
 - `approve-production --run-id <id> --approved-by <user> --ticket <id> --ticket-source <src> --reason <text> [--expires-in-minutes <n>]`
 - `audit --run-id <id> [--flat-fields]`
 - `audit-export-siem --run-id <id> [--flat-fields] [--batch-size <n>] [--max-file-size-bytes <n>]`
-- `audit-verify-chain --run-id <id> [--skip-siem-exports]`
+- `audit-verify-chain --run-id <id> [--skip-siem-exports] [--strict]`
+- `audit-repair-chain --run-id <id> [--skip-siem-exports]`
 
 Key options:
 - `--repo-path`
@@ -213,6 +214,18 @@ Verify forensics chain integrity:
 
 ~~~bash
 uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio audit-verify-chain --run-id run-abc123
+~~~
+
+Strict verification (fails if SIEM manifest is missing or incomplete):
+
+~~~bash
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio audit-verify-chain --run-id run-abc123 --strict
+~~~
+
+Repair chain on an immutable forensic snapshot directory (never in-place):
+
+~~~bash
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio audit-repair-chain --run-id run-abc123
 ~~~
 
 Audit events are SIEM-compatible and versioned (`schema_version=siem.audit.v1`, `event_version=1`) with stable fields such as `event_type`, `run_id`, `correlation_id`, `actor_role`, `action`, and `siem.event.*` mappings.

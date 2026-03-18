@@ -131,13 +131,13 @@ class AuditLogger:
         (export_dir / "siem_export_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=True), encoding="utf-8")
         return exported
 
-    def verify_chain(self, *, include_siem_exports: bool = True) -> dict[str, Any]:
+    def verify_chain(self, *, include_siem_exports: bool = True, strict: bool = False) -> dict[str, Any]:
         audit_report = _verify_signed_jsonl_file(self.audit_file)
         ticket_report = _verify_signed_jsonl_file(self.ticket_validation_file)
 
         siem_report: dict[str, Any] = {"valid": True, "checked": False, "reason": "siem verification skipped"}
         if include_siem_exports:
-            siem_report = self._verify_siem_exports()
+            siem_report = self._verify_siem_exports(strict=strict)
 
         overall_valid = bool(audit_report.get("valid", False)) and bool(ticket_report.get("valid", False)) and bool(siem_report.get("valid", False))
         return {
@@ -147,9 +147,50 @@ class AuditLogger:
             "siem_exports": siem_report,
         }
 
-    def _verify_siem_exports(self) -> dict[str, Any]:
+    def repair_chain(self, *, include_siem_exports: bool = True) -> dict[str, Any]:
+        """Rebuild signed chain into an immutable repair snapshot directory.
+
+        This function never mutates original artifacts and always returns a detailed report.
+        """
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        repair_root = self.run_dir / "forensics_repair" / timestamp
+        repair_root.mkdir(parents=True, exist_ok=True)
+        report: dict[str, Any] = {
+            "ok": True,
+            "run_dir": str(self.run_dir),
+            "repair_dir": str(repair_root),
+            "messages": [],
+            "files": {},
+        }
+
+        audit_dst = repair_root / self.audit_file.name
+        report["files"][self.audit_file.name] = _repair_single_jsonl(self.audit_file, audit_dst)
+        report["messages"].append(f"processed {self.audit_file.name}")
+
+        ticket_dst = repair_root / self.ticket_validation_file.name
+        report["files"][self.ticket_validation_file.name] = _repair_single_jsonl(self.ticket_validation_file, ticket_dst)
+        report["messages"].append(f"processed {self.ticket_validation_file.name}")
+
+        if include_siem_exports:
+            siem_src_dir = self.run_dir / "siem_exports"
+            siem_dst_dir = repair_root / "siem_exports"
+            siem_dst_dir.mkdir(parents=True, exist_ok=True)
+            siem_result = self._repair_siem_exports(source_dir=siem_src_dir, destination_dir=siem_dst_dir)
+            report["files"]["siem_exports"] = siem_result
+            report["messages"].append("processed siem exports")
+
+        report["ok"] = all(bool(item.get("ok", False)) for item in report["files"].values())
+        if not report["messages"]:
+            report["messages"] = ["no files were processed"]
+            report["ok"] = False
+        return report
+
+    def _verify_siem_exports(self, *, strict: bool) -> dict[str, Any]:
         export_dir = self.run_dir / "siem_exports"
         if not export_dir.exists():
+            if strict:
+                return {"valid": False, "checked": True, "reason": "siem export directory missing in strict mode"}
             return {"valid": True, "checked": True, "reason": "no siem exports"}
 
         manifest_path = export_dir / "siem_export_manifest.json"
@@ -163,6 +204,8 @@ class AuditLogger:
             for item in manifest.get("files", []):
                 if isinstance(item, str) and item.strip():
                     files.append(export_dir / item)
+            if strict and not files:
+                return {"valid": False, "checked": True, "reason": "siem manifest has no files in strict mode"}
             report = _verify_signed_jsonl_paths(files)
             report["checked"] = True
             if report.get("valid", False):
@@ -170,12 +213,58 @@ class AuditLogger:
                 if expected != report.get("final_hash"):
                     report["valid"] = False
                     report["reason"] = "manifest final_chain_hash mismatch"
+                if strict:
+                    existing = sorted(export_dir.glob("siem_export_*.ndjson"))
+                    expected_paths = {path.name for path in files}
+                    existing_paths = {path.name for path in existing}
+                    if expected_paths != existing_paths:
+                        report["valid"] = False
+                        report["reason"] = "manifest file list incomplete in strict mode"
             return report
+
+        if strict:
+            return {"valid": False, "checked": True, "reason": "siem manifest missing in strict mode"}
 
         files = sorted(export_dir.glob("siem_export_*.ndjson"))
         report = _verify_signed_jsonl_paths(files)
         report["checked"] = True
         return report
+
+    def _repair_siem_exports(self, *, source_dir: Path, destination_dir: Path) -> dict[str, Any]:
+        files = sorted(source_dir.glob("siem_export_*.ndjson")) if source_dir.exists() else []
+        if not files:
+            return {"ok": True, "reason": "no siem export files", "files": []}
+
+        outputs: list[str] = []
+        previous_hash: str | None = None
+        total_entries = 0
+        for source in files:
+            destination = destination_dir / source.name
+            repair = _repair_single_jsonl(source, destination, previous_hash=previous_hash)
+            outputs.append(source.name)
+            total_entries += int(repair.get("entries", 0))
+            previous_hash = repair.get("final_hash")
+            if not repair.get("ok", False):
+                return {
+                    "ok": False,
+                    "reason": f"failed to repair {source.name}: {repair.get('reason', 'unknown')}",
+                    "files": outputs,
+                    "entries": total_entries,
+                }
+
+        manifest = {
+            "schema_version": SCHEMA_VERSION,
+            "event_version": EVENT_VERSION,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "algorithm": "sha256",
+            "entry_count": total_entries,
+            "file_count": len(outputs),
+            "final_chain_hash": previous_hash,
+            "files": outputs,
+            "repaired_from": str(source_dir),
+        }
+        (destination_dir / "siem_export_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=True), encoding="utf-8")
+        return {"ok": True, "files": outputs, "entries": total_entries, "final_hash": previous_hash}
 
 
 def _siem_mapping(event: str) -> dict[str, str]:
@@ -381,3 +470,43 @@ def _verify_signed_jsonl_paths(paths: list[Path]) -> dict[str, Any]:
             previous_hash = current if isinstance(current, str) else previous_hash
 
     return {"valid": True, "entries": entries, "final_hash": previous_hash}
+
+
+def _repair_single_jsonl(source: Path, destination: Path, *, previous_hash: str | None = None) -> dict[str, Any]:
+    if not source.exists():
+        return {"ok": True, "entries": 0, "final_hash": previous_hash, "reason": "source missing"}
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    repaired_lines: list[str] = []
+    entries = 0
+    running_hash = previous_hash
+
+    for line_no, line in enumerate(source.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            return {
+                "ok": False,
+                "entries": entries,
+                "final_hash": running_hash,
+                "reason": f"invalid JSON at line {line_no}",
+            }
+        if not isinstance(payload, dict):
+            return {
+                "ok": False,
+                "entries": entries,
+                "final_hash": running_hash,
+                "reason": f"invalid payload type at line {line_no}",
+            }
+
+        unsigned_payload = dict(payload)
+        unsigned_payload.pop("forensics", None)
+        signed = _with_chain_signature(unsigned_payload, previous_hash=running_hash)
+        running_hash = _extract_chain_hash(signed)
+        repaired_lines.append(json.dumps(signed, ensure_ascii=True))
+        entries += 1
+
+    destination.write_text(("\n".join(repaired_lines) + "\n") if repaired_lines else "", encoding="utf-8")
+    return {"ok": True, "entries": entries, "final_hash": running_hash, "output": str(destination)}

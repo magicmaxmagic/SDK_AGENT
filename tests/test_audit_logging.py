@@ -90,3 +90,35 @@ def test_verify_chain_detects_tampering(tmp_path: Path) -> None:
     report = logger.verify_chain(include_siem_exports=False)
     assert report["valid"] is False
     assert report["audit_log"]["valid"] is False
+
+
+def test_verify_chain_strict_fails_without_siem_manifest(tmp_path: Path) -> None:
+    logger = AuditLogger(run_dir=tmp_path / "run-7")
+    logger.record("phase", {"run_id": "run-7", "value": "plan"})
+
+    report = logger.verify_chain(include_siem_exports=True, strict=True)
+    assert report["valid"] is False
+    assert report["siem_exports"]["valid"] is False
+
+
+def test_repair_chain_rebuilds_tampered_snapshot(tmp_path: Path) -> None:
+    logger = AuditLogger(run_dir=tmp_path / "run-8")
+    logger.record("phase", {"run_id": "run-8", "value": "plan"})
+    logger.record("phase", {"run_id": "run-8", "value": "validate"})
+
+    lines = logger.audit_file.read_text(encoding="utf-8").splitlines()
+    tampered = json.loads(lines[1])
+    tampered["forensics"]["chain_hash"] = "deadbeef"
+    lines[1] = json.dumps(tampered, ensure_ascii=True)
+    logger.audit_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    verify = logger.verify_chain(include_siem_exports=False)
+    assert verify["valid"] is False
+
+    repair = logger.repair_chain(include_siem_exports=False)
+    assert repair["ok"] is True
+    assert repair["messages"]
+    repaired_file = Path(repair["files"]["audit_log.jsonl"]["output"])
+    repaired_logger = AuditLogger(run_dir=repaired_file.parent)
+    repaired_verify = repaired_logger.verify_chain(include_siem_exports=False)
+    assert repaired_verify["valid"] is True

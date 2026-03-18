@@ -111,6 +111,14 @@ def test_cli_audit_export_siem_parsing() -> None:
 
 def test_cli_audit_verify_chain_parsing() -> None:
     parser = _base_parser()
-    args = parser.parse_args(["audit-verify-chain", "--run-id", "run-1", "--skip-siem-exports"])
+    args = parser.parse_args(["audit-verify-chain", "--run-id", "run-1", "--skip-siem-exports", "--strict"])
     assert args.command == "audit-verify-chain"
+    assert args.skip_siem_exports is True
+    assert args.strict is True
+
+
+def test_cli_audit_repair_chain_parsing() -> None:
+    parser = _base_parser()
+    args = parser.parse_args(["audit-repair-chain", "--run-id", "run-1", "--skip-siem-exports"])
+    assert args.command == "audit-repair-chain"
     assert args.skip_siem_exports is True
