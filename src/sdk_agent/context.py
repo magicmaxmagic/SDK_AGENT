@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from sdk_agent.models import AutonomyLevel, EnvironmentType, TrustProfile
 
@@ -33,8 +34,8 @@ class ProjectContext:
     production_approval_validity_minutes: int = 120
     required_staging_approvals: int = 2
     required_production_approvals: int = 3
-    change_ticket_pattern: str = r"^(CHG|RFC|INC)-[0-9]{3,}$"
-    allowed_ticket_sources: list[str] = field(default_factory=lambda: ["cab", "itsm", "jira"])
+    ticket_connector: str = "mock"
+    ticket_connector_settings: dict[str, Any] = field(default_factory=dict)
     use_worktree: bool = False
 
     def resolved_artifact_root(self) -> Path:

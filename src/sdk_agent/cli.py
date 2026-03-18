@@ -4,7 +4,9 @@ import argparse
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
+from sdk_agent.core.ticket_connectors import build_ticket_connector
 from sdk_agent.logging_config import configure_logging
 from sdk_agent.models import AutonomyLevel, FlowType, TrustProfile
 from sdk_agent.plugins import CriticalRepoPlugin, GenericProjectPlugin, NextJsPlugin, PythonAppPlugin
@@ -20,7 +22,7 @@ PLUGIN_REGISTRY = {
 
 
 def _base_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="SDK Agent autonomous engineering CLI")
+    parser = argparse.ArgumentParser(description="SDK Agent autonomous engineering CLI", allow_abbrev=False)
     parser.add_argument("--repo-path", default=".")
     parser.add_argument("--project-name", default="project")
     parser.add_argument("--plugin", choices=sorted(PLUGIN_REGISTRY.keys()), default="generic")
@@ -37,8 +39,8 @@ def _base_parser() -> argparse.ArgumentParser:
     parser.add_argument("--production-approval-validity-minutes", type=int, default=120)
     parser.add_argument("--required-staging-approvals", type=int, default=2)
     parser.add_argument("--required-production-approvals", type=int, default=3)
-    parser.add_argument("--change-ticket-pattern", default=r"^(CHG|RFC|INC)-[0-9]{3,}$")
-    parser.add_argument("--allowed-ticket-sources", default="cab,itsm,jira")
+    parser.add_argument("--ticket-connector", choices=["mock", "jira", "servicenow", "composite"], default=None)
+    parser.add_argument("--ticket-connector-settings", default=None)
     parser.add_argument("--enable-tester-mcp", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--max-fix-iterations", type=int, default=2)
@@ -123,8 +125,14 @@ async def _run_async(args: argparse.Namespace) -> int:
     team.workflow.context.production_approval_validity_minutes = args.production_approval_validity_minutes
     team.workflow.context.required_staging_approvals = args.required_staging_approvals
     team.workflow.context.required_production_approvals = args.required_production_approvals
-    team.workflow.context.change_ticket_pattern = args.change_ticket_pattern
-    team.workflow.context.allowed_ticket_sources = [value.strip().lower() for value in args.allowed_ticket_sources.split(",") if value.strip()]
+    if args.ticket_connector is not None:
+        team.workflow.context.ticket_connector = args.ticket_connector
+    if args.ticket_connector_settings is not None:
+        team.workflow.context.ticket_connector_settings = _parse_connector_settings(args.ticket_connector_settings)
+    team.workflow.ticket_connector = build_ticket_connector(
+        team.workflow.context.ticket_connector,
+        team.workflow.context.ticket_connector_settings,
+    )
 
     if args.command in {"feature", "bugfix", "plan", "validate", "review"}:
         request = getattr(args, "request", "") or f"{args.command} workflow"
@@ -207,3 +215,10 @@ def main() -> None:
     configure_logging()
     args = _base_parser().parse_args()
     raise SystemExit(asyncio.run(_run_async(args)))
+
+
+def _parse_connector_settings(raw: str) -> dict[str, Any]:
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("--ticket-connector-settings must be a JSON object")
+    return payload

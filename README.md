@@ -130,8 +130,8 @@ Key options:
 - `--production-approval-validity-minutes`
 - `--required-staging-approvals`
 - `--required-production-approvals`
-- `--change-ticket-pattern`
-- `--allowed-ticket-sources`
+- `--ticket-connector`
+- `--ticket-connector-settings`
 - `--dry-run`
 
 ## Usage Examples (uv)
@@ -210,9 +210,9 @@ uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio au
 
 Audit events are SIEM-compatible and versioned (`schema_version=siem.audit.v1`, `event_version=1`) with stable fields such as `event_type`, `run_id`, `correlation_id`, `actor_role`, `action`, and `siem.event.*` mappings.
 
-Ticket validation is strict before any approval is accepted: ticket id must match `--change-ticket-pattern` and `--ticket-source` must be listed in `--allowed-ticket-sources`.
+Ticket validation now runs through an external connector (`mock`, `jira`, `servicenow`, or `composite`) configured by plugin/project policy. CLI can override via `--ticket-connector` and `--ticket-connector-settings`.
 
-Approval quorum is environment/target-aware: staging defaults to 2 active distinct approvals, production defaults to 3 active distinct approvals. Approval validity defaults to 120 minutes.
+Approval quorum is project-policy driven per target: staging and production thresholds come from plugin defaults and can be overridden from CLI when needed. Approval validity defaults to 120 minutes.
 
 Dry-run simulation:
 

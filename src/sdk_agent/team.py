@@ -6,6 +6,7 @@ from sdk_agent.core.artifacts import ArtifactManager
 from sdk_agent.core.audit import AuditLogger
 from sdk_agent.core.base_agent import BaseAgentFactory
 from sdk_agent.core.policy_engine import PolicyEngine
+from sdk_agent.core.ticket_connectors import build_ticket_connector
 from sdk_agent.core.workflow_engine import WorkflowEngine
 from sdk_agent.plugins.base import BaseProjectPlugin
 from sdk_agent.roles import (
@@ -91,6 +92,7 @@ def build_team(plugin: BaseProjectPlugin, model: str, max_fix_iterations: int = 
         artifact_manager=artifact_manager,
         audit_logger=AuditLogger(run_dir=context.resolved_artifact_root()),
         policy_engine=policy_engine,
+        ticket_connector=build_ticket_connector(context.ticket_connector, context.ticket_connector_settings),
         triage=triage,
         planner=planner,
         architect=architect,

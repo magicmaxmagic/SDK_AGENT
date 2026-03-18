@@ -21,3 +21,21 @@ class CriticalRepoPlugin(BaseProjectPlugin):
             "developer": {"write": False},
             "tester": {"shell": True},
         }
+
+    def required_staging_approvals(self) -> int:
+        return 2
+
+    def required_production_approvals(self) -> int:
+        return 4
+
+    def production_approval_validity_minutes(self) -> int:
+        return 60
+
+    def ticket_connector(self) -> str:
+        return "servicenow"
+
+    def ticket_connector_settings(self) -> dict[str, object]:
+        return {
+            "accepted_sources": ["itsm", "cab"],
+            "strict_known": False,
+        }

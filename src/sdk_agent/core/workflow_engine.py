@@ -4,7 +4,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import re
 from typing import Any, AsyncIterator
 
 from sdk_agent.context import ProjectContext
@@ -14,6 +13,7 @@ from sdk_agent.core.git_workflow import prepare_git_workflow
 from sdk_agent.core.persistence import StatePersistence
 from sdk_agent.core.policy_engine import PolicyEngine
 from sdk_agent.core.sensitivity import classify_sensitive_changes
+from sdk_agent.core.ticket_connectors import ChangeTicketConnector
 from sdk_agent.core.transitions import can_retry, should_rework_from_review, should_rework_from_validation
 from sdk_agent.core.workflow_state import WorkflowStateStore
 from sdk_agent.logging_config import get_logger
@@ -53,6 +53,7 @@ class WorkflowEngine:
     artifact_manager: ArtifactManager
     audit_logger: AuditLogger
     policy_engine: PolicyEngine
+    ticket_connector: ChangeTicketConnector
     triage: Any
     planner: Any
     architect: Any
@@ -294,9 +295,9 @@ class WorkflowEngine:
         state = self.status(run_id)
         ticket_source_normalized = ticket_source.strip().lower()
         ticket_id_normalized = ticket_id.strip().upper()
-        approval_error = self._validate_change_ticket(ticket_id_normalized, ticket_source_normalized)
-        if approval_error:
-            state.add_error(approval_error)
+        validation = self.ticket_connector.validate(ticket_id=ticket_id_normalized, ticket_source=ticket_source_normalized)
+        if not validation.valid:
+            state.add_error(validation.reason)
             self.audit_logger = AuditLogger(run_dir=self.context.resolved_artifact_root() / run_id)
             self.audit_logger.record(
                 f"policy_{target}_approval_rejected",
@@ -305,7 +306,8 @@ class WorkflowEngine:
                     "approved_by": approved_by,
                     "ticket_id": ticket_id_normalized,
                     "ticket_source": ticket_source_normalized,
-                    "reason": approval_error,
+                    "reason": validation.reason,
+                    "ticket_provider": validation.provider,
                 },
                 status="failure",
                 role=RoleName.POLICY_ENFORCER.value,
@@ -328,8 +330,9 @@ class WorkflowEngine:
         approval = {
             "target": target,
             "approved_by": approved_by,
-            "ticket_id": ticket_id_normalized,
+            "ticket_id": validation.normalized_ticket_id or ticket_id_normalized,
             "ticket_source": ticket_source_normalized,
+            "ticket_provider": validation.provider,
             "reason": reason,
             "approved_at": now.isoformat(),
             "expires_at": expires_at.isoformat(),
@@ -355,8 +358,9 @@ class WorkflowEngine:
                 "run_id": run_id,
                 "target": target,
                 "approved_by": approved_by,
-                "ticket_id": ticket_id_normalized,
+                "ticket_id": validation.normalized_ticket_id or ticket_id_normalized,
                 "ticket_source": ticket_source_normalized,
+                "ticket_provider": validation.provider,
                 "expires_at": expires_at.isoformat(),
                 "active_approvals": active_count,
                 "required_approvals": required,
@@ -491,16 +495,6 @@ class WorkflowEngine:
         active = self._approval_count(state, target=target)
         return f"{target} approval requires {required} distinct approvers, {active} active so far"
 
-    def _validate_change_ticket(self, ticket_id: str, ticket_source: str) -> str | None:
-        if not ticket_id or not ticket_source:
-            return "ticket id and ticket source are required"
-        allowed_sources = {value.strip().lower() for value in self.context.allowed_ticket_sources if value.strip()}
-        if ticket_source not in allowed_sources:
-            return f"ticket source '{ticket_source}' is not in allowed sources"
-        pattern = self.context.change_ticket_pattern
-        if not re.fullmatch(pattern, ticket_id):
-            return f"ticket '{ticket_id}' does not match required pattern"
-        return None
 
     async def _run_plan(self, store: WorkflowStateStore) -> None:
         store.mark_phase("plan")

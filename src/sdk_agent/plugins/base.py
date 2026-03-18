@@ -70,6 +70,25 @@ class BaseProjectPlugin:
             "Never push automatically.",
         ]
 
+    def required_staging_approvals(self) -> int:
+        return 2
+
+    def required_production_approvals(self) -> int:
+        return 3
+
+    def production_approval_validity_minutes(self) -> int:
+        return 120
+
+    def ticket_connector(self) -> str:
+        return "mock"
+
+    def ticket_connector_settings(self) -> dict[str, object]:
+        return {
+            "allowed_sources": ["cab", "itsm", "jira"],
+            "ticket_pattern": r"^(CHG|RFC|INC)-[0-9]{3,}$",
+            "strict_known": False,
+        }
+
     def role_capability_overrides(self) -> dict[str, dict[str, bool]]:
         return {}
 
@@ -113,4 +132,9 @@ class BaseProjectPlugin:
             trust_profile=self.trust_profile(),
             autonomy_level=self.autonomy_level(),
             environment=self.environment(),
+            production_approval_validity_minutes=self.production_approval_validity_minutes(),
+            required_staging_approvals=self.required_staging_approvals(),
+            required_production_approvals=self.required_production_approvals(),
+            ticket_connector=self.ticket_connector(),
+            ticket_connector_settings=dict(self.ticket_connector_settings()),
         )

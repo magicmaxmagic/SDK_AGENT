@@ -5,6 +5,7 @@ from sdk_agent.context import ProjectContext
 from sdk_agent.core.artifacts import ArtifactManager
 from sdk_agent.core.audit import AuditLogger
 from sdk_agent.core.policy_engine import PolicyEngine
+from sdk_agent.core.ticket_connectors import build_ticket_connector
 from sdk_agent.core.workflow_engine import WorkflowEngine
 from sdk_agent.models import AutonomyLevel, CommandResult, FlowType, TrustProfile
 from sdk_agent.plugins.generic import GenericProjectPlugin
@@ -41,6 +42,7 @@ def _engine(tmp_path: Path) -> WorkflowEngine:
         artifact_manager=ArtifactManager(context=context),
         audit_logger=AuditLogger(run_dir=context.resolved_artifact_root()),
         policy_engine=PolicyEngine(context=context),
+        ticket_connector=build_ticket_connector("mock", {}),
         triage=DummyAgent("triage"),
         planner=DummyAgent("planner"),
         architect=DummyAgent("architect"),
