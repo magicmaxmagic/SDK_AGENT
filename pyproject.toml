@@ -15,6 +15,9 @@ dependencies = [
   "openai-agents"
 ]
 
+[project.scripts]
+sdk-agent-dashboard = "sdk_agent.web.cli:main"
+
 [project.optional-dependencies]
 web = [
   "fastapi>=0.111.0",

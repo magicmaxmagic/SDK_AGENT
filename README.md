@@ -134,7 +134,11 @@ pip install -e .[web]
 
 Run the dashboard:
 
-uvicorn sdk_agent.web.main:app --reload
+uv run --extra web sdk-agent-dashboard --reload
+
+Alternative without script entrypoint:
+
+uv run --extra web uvicorn --app-dir src sdk_agent.web.main:app --reload
 
 Open:
 
