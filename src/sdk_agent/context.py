@@ -10,4 +10,3 @@ class ProjectContext:
     deploy_staging_command: str | None = None
     deploy_production_command: str | None = None
     notes: list[str] = field(default_factory=list)
-    metadata: dict[str, str] = field(default_factory=dict)

@@ -5,30 +5,23 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sdk-agent"
 version = "0.1.0"
-description = "Reusable multi-agent SDK for software workflows"
+description = "Reusable multi-agent SDK powered by OpenAI Agents SDK and Codex MCP"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [
-  { name = "Maxence Legendre" }
-]
 dependencies = [
-  "openai-agents"
+  "openai-agents>=0.12.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0"
 ]
 
 [project.scripts]
-sdk-agent-dashboard = "sdk_agent.web.cli:main"
-
-[project.optional-dependencies]
-web = [
-  "fastapi>=0.111.0",
-  "uvicorn>=0.30.0"
-]
+sdk-agent = "sdk_agent.main:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]

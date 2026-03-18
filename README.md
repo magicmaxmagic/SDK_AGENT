@@ -1,178 +1,61 @@
-# SDK_AGENT
+# sdk_agent
 
-Reusable Python package to build multi-agent software engineering workflows with the OpenAI Agents SDK.
+A reusable Python package that orchestrates a software-delivery team with OpenAI Agents SDK.
+
+It uses Codex CLI as an MCP server through MCPServerStdio with:
+- command: codex
+- args: ["mcp-server"]
 
 ## Features
 
-- Reusable agent factories
-- Standard software roles:
-  - Planner
-  - Developer
-  - Tester
-  - Reviewer
-  - Deployer
-- Shared project context
-- Reusable workflow orchestration
-- Plugin-ready architecture for multiple projects
-- Fully customizable team configuration (roles, prompts, workflow stages, tools)
-- Codex/shell/MCP tool injection via plugins
+- Reusable ProjectContext dataclass
+- Reusable Agent factory
+- Multi-step workflow:
+  1) Plan
+  2) Implement
+  3) Test
+  4) Review
+  5) Deploy preparation
+- Production safety:
+  - Never auto deploy to production
+  - Deployer only returns deployment checklist and rollback plan
 
-## Installation
+## Install
 
-### Local editable install
+1. Create and activate a virtual environment
+2. Install package
 
-```bash
+Example:
+
 pip install -e .
-```
 
-### Install from GitHub
+## Requirements
 
-```bash
-pip install "sdk-agent @ git+https://github.com/magicmaxmagic/SDK_AGENT.git@main"
-```
+- Python 3.10+
+- Codex CLI installed and available in PATH
+- Environment variable OPENAI_API_KEY set
 
-## Example
+Optional if using custom endpoint:
 
-```python
-from sdk_agent import build_software_team
-from sdk_agent.context import ProjectContext
+- OPENAI_BASE_URL
 
-context = ProjectContext(
-    project_name="portfolio",
-    repo_path="/home/maxence/Documents/portfolio",
-    test_command="npm test",
-    lint_command="npm run lint",
-)
+## Run from CLI
 
-team = build_software_team(context=context)
-print(team.keys())
-```
+python -m sdk_agent.main "my task"
 
-## Advanced Customization (Multi-Project)
+Optional arguments:
 
-```python
-from sdk_agent import (
-  ProjectContext,
-  TeamConfig,
-  RoleConfig,
-  WorkflowConfig,
-  build_software_team,
-)
-from sdk_agent.plugins.base import BaseProjectPlugin
+python -m sdk_agent.main "my task" --repo-path /home/user/myrepo --project-name myrepo --model gpt-5-codex
 
+## What happens at runtime
 
-class PortfolioPlugin(BaseProjectPlugin):
-  def get_shared_tools(self) -> list:
-    return ["shell", "filesystem"]
+- The process opens Codex MCP server via MCPServerStdio
+- All role agents are connected to this MCP server
+- The workflow runs:
+  plan -> implement -> test -> review -> deploy prep
+- The final output is printed as JSON
 
-  def get_role_tools(self) -> dict[str, list]:
-    return {
-      "developer": ["codex"],
-      "tester": ["shell"],
-      "deployer": ["shell"],
-    }
+## Test
 
-  def get_role_instruction_suffixes(self) -> dict[str, str]:
-    return {
-      "developer": "Respect existing React architecture and keep patches minimal.",
-      "tester": "Always run unit tests first, then lint checks.",
-    }
-
-
-context = ProjectContext(
-  project_name="portfolio",
-  repo_path="/home/maxence/Documents/portfolio",
-  test_command="npm test",
-  lint_command="npm run lint",
-  notes=["Do not break current UI routes", "Prefer incremental changes"],
-)
-
-config = TeamConfig(
-  model="gpt-5-codex",
-  shared_tools=["repo_search"],
-  roles={
-    "reviewer": RoleConfig(enabled=True),
-    "deployer": RoleConfig(enabled=False),
-    "developer": RoleConfig(
-      instructions_suffix="Always provide a rollback-safe implementation path.",
-    ),
-  },
-  workflow=WorkflowConfig(
-    run_planning=True,
-    run_testing=True,
-    run_review=True,
-    run_deploy=False,
-    prompt_overrides={
-      "testing": "Execute tests, report failures, propose minimal fixes.",
-    },
-  ),
-)
-
-team = build_software_team(
-  context=context,
-  team_config=config,
-  plugins=[PortfolioPlugin(context=context)],
-)
-
-print(team["workflow"])
-```
-
-## What Is Customizable
-
-- Activate or disable roles (`planner`, `developer`, `tester`, `reviewer`, `deployer`)
-- Override role instructions entirely, or append project constraints
-- Inject shared tools for all roles or role-specific tools only
-- Enable/disable workflow stages (planning, testing, review, deploy)
-- Override workflow prompts per stage
-- Attach project plugins to adapt behavior per repository/domain
-
-## Web Monitoring Dashboard
-
-Install web dependencies:
-
-pip install -e .[web]
-
-Run the dashboard:
-
-uv run --extra web sdk-agent-dashboard --reload
-
-Alternative without script entrypoint:
-
-uv run --extra web uvicorn --app-dir src sdk_agent.web.main:app --reload
-
-Open:
-
-http://127.0.0.1:8000
-
-Useful endpoints:
-
-- GET /api/status
-- POST /api/runs/start
-- POST /api/runs/{run_id}/finish
-- POST /api/agents/{agent_name}
-
-Example status update payload:
-
-{"stage":"coding","progress":45,"message":"Implementing auth flow"}
-
-Automatic workflow tracking (no manual API calls):
-
-```python
-from sdk_agent import ProjectContext, build_software_team
-from sdk_agent.web.app import create_dashboard_app
-
-app = create_dashboard_app()
-tracker = app.state.tracker
-
-context = ProjectContext(
-  project_name="portfolio",
-  repo_path="/home/maxence/Documents/portfolio",
-)
-
-team = build_software_team(context=context, status_tracker=tracker)
-
-# When you run this, planner/developer/tester/reviewer/deployer statuses
-# are pushed automatically to the dashboard tracker.
-result = await team["workflow"].run("Build a new pricing page with tests")
-print(result["run_id"])
-```
+pip install -e .[dev]
+pytest

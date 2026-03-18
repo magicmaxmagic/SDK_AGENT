@@ -15,6 +15,8 @@ class WorkflowConfig:
     run_testing: bool = True
     run_review: bool = True
     run_deploy: bool = True
+    require_approval: bool = True
+    max_iterations: int = 3
     prompt_overrides: dict[str, str] = field(default_factory=dict)
 
 

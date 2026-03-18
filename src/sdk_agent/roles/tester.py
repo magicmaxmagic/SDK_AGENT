@@ -1,26 +1,22 @@
-from sdk_agent.core.base_agent import BaseAgentFactory
+from __future__ import annotations
+
 from sdk_agent.context import ProjectContext
+from sdk_agent.core.base_agent import BaseAgentFactory
 
 
 def make_tester_agent(
     factory: BaseAgentFactory,
     context: ProjectContext,
-    tools: list | None = None,
-    instructions_override: str | None = None,
-    instructions_suffix: str | None = None,
+    mcp_servers: list | None = None,
 ):
-    instructions = instructions_override or (
-        f"You are a QA engineer working on the project '{context.project_name}'. "
-        f"The main test command is: {context.test_command}. "
-        f"The lint command is: {context.lint_command}. "
-        "Validate the changes carefully, identify missing tests, and report issues clearly."
+    instructions = (
+        f"You are the Tester for project '{context.project_name}'. "
+        f"Use test command: {context.test_command}. "
+        f"Use lint command: {context.lint_command}. "
+        "Validate changes, list failures, and propose minimal fixes."
     )
-
-    if instructions_suffix:
-        instructions = f"{instructions}\n\nAdditional project constraints:\n{instructions_suffix}"
-
     return factory.create(
         name="Tester",
         instructions=instructions,
-        tools=tools or [],
+        mcp_servers=mcp_servers,
     )

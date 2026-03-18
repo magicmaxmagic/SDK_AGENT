@@ -121,6 +121,7 @@ def create_dashboard_app(tracker: InMemoryStatusTracker | None = None):
     try:
         from fastapi import FastAPI
         from fastapi import HTTPException
+        from fastapi import Response
         from fastapi.responses import HTMLResponse
     except ModuleNotFoundError as exc:
         raise RuntimeError(
@@ -136,6 +137,10 @@ def create_dashboard_app(tracker: InMemoryStatusTracker | None = None):
     @app.get("/")
     async def dashboard():
         return HTMLResponse(content=DASHBOARD_HTML)
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+      return Response(status_code=204)
 
     @app.get("/api/status")
     async def get_status():
