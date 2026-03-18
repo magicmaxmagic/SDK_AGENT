@@ -108,6 +108,7 @@ Main operational commands:
 - `status --run-id <id>`
 - `deploy-staging --run-id <id>`
 - `deploy-production --run-id <id>`
+- `approve-production --run-id <id> --approved-by <user> --ticket <id> --reason <text>`
 - `audit --run-id <id>`
 
 Key options:
@@ -158,11 +159,25 @@ Prepare staging deployment for a run:
 uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio deploy-staging --run-id run-abc123
 ~~~
 
+Add explicit human approval before production deployment:
+
+~~~bash
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio approve-production --run-id run-abc123 --approved-by oncall.lead --ticket CHG-4242 --reason "CAB approved"
+~~~
+
+Deploy to production after approval:
+
+~~~bash
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio deploy-production --run-id run-abc123
+~~~
+
 Read audit trail:
 
 ~~~bash
 uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio audit --run-id run-abc123
 ~~~
+
+Audit events are SIEM-compatible and versioned (`schema_version=siem.audit.v1`, `event_version=1`) with stable fields such as `event_type`, `run_id`, `correlation_id`, `actor_role`, `action`, and `siem.event.*` mappings.
 
 Dry-run simulation:
 

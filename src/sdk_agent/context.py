@@ -17,6 +17,8 @@ class ProjectContext:
     build_command: str | None = None
     deploy_staging_command: str | None = None
     deploy_production_command: str | None = None
+    rollback_staging_command: str | None = None
+    rollback_production_command: str | None = None
     allow_staging_deploy: bool = False
     allow_production_deploy: bool = False
     dry_run: bool = False

@@ -35,3 +35,22 @@ def test_cli_deploy_production_parsing() -> None:
     parser = _base_parser()
     args = parser.parse_args(["deploy-production", "--run-id", "run-1"])
     assert args.command == "deploy-production"
+
+
+def test_cli_approve_production_parsing() -> None:
+    parser = _base_parser()
+    args = parser.parse_args(
+        [
+            "approve-production",
+            "--run-id",
+            "run-1",
+            "--approved-by",
+            "oncall.lead",
+            "--ticket",
+            "CHG-4242",
+            "--reason",
+            "CAB approved",
+        ]
+    )
+    assert args.command == "approve-production"
+    assert args.approved_by == "oncall.lead"

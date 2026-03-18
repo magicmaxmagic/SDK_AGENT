@@ -84,6 +84,8 @@ class ActionType(str, Enum):
     TOUCH_SECRETS = "touch_secrets"
     DEPLOY_STAGING = "deploy_staging"
     DEPLOY_PRODUCTION = "deploy_production"
+    ROLLBACK_STAGING = "rollback_staging"
+    ROLLBACK_PRODUCTION = "rollback_production"
     COMMIT = "commit"
     PUSH = "push"
     CREATE_PR_DRAFT = "create_pr_draft"
@@ -178,6 +180,9 @@ class WorkflowState:
     final_status: WorkflowStatus = WorkflowStatus.RUNNING
     final_decision: str | None = None
     human_approval_required: bool = True
+    production_approval: dict[str, Any] | None = None
+    deployment_history: list[dict[str, Any]] = field(default_factory=list)
+    rollback_history: list[dict[str, Any]] = field(default_factory=list)
     pending_actions: list[str] = field(default_factory=list)
     tool_results: list[dict[str, Any]] = field(default_factory=list)
     policy_decisions: list[dict[str, Any]] = field(default_factory=list)

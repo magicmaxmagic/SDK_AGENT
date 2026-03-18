@@ -43,8 +43,8 @@ TRUST_POLICIES: dict[TrustProfile, TrustProfilePolicy] = {
         allow_commit=True,
         allow_pr_draft=True,
         allow_staging_deploy=True,
-        allow_production_deploy=False,
-        require_human_approval=False,
+        allow_production_deploy=True,
+        require_human_approval=True,
         allow_hotfix_mode=True,
     ),
     TrustProfile.NORMAL_INTERNAL: TrustProfilePolicy(
@@ -111,6 +111,14 @@ class PolicyEngine:
         if action == ActionType.DEPLOY_STAGING:
             if not profile_policy.allow_staging_deploy or not self.context.allow_staging_deploy:
                 return PolicyDecision(False, "staging deploy not allowed by profile", action, role)
+
+        if action == ActionType.ROLLBACK_STAGING:
+            if not profile_policy.allow_staging_deploy or not self.context.allow_staging_deploy:
+                return PolicyDecision(False, "staging rollback not allowed by profile", action, role)
+
+        if action == ActionType.ROLLBACK_PRODUCTION:
+            if not profile_policy.allow_production_deploy or not self.context.allow_production_deploy:
+                return PolicyDecision(False, "production rollback not allowed by profile", action, role)
 
         if action in {ActionType.EDIT_FILE, ActionType.RUN_MIGRATIONS, ActionType.CHANGE_CICD, ActionType.TOUCH_SECRETS}:
             if not profile_policy.allow_code_writes:

@@ -53,6 +53,12 @@ class BaseProjectPlugin:
     def deploy_production_command(self) -> str | None:
         return None
 
+    def rollback_staging_command(self) -> str | None:
+        return None
+
+    def rollback_production_command(self) -> str | None:
+        return None
+
     def protected_paths(self) -> list[str]:
         return [".github/workflows", "infra/", "secrets/"]
 
@@ -77,6 +83,16 @@ class BaseProjectPlugin:
         }
 
     def to_context(self) -> ProjectContext:
+        allowed_commands = list(self.allowed_commands())
+        for command in (
+            self.deploy_staging_command(),
+            self.deploy_production_command(),
+            self.rollback_staging_command(),
+            self.rollback_production_command(),
+        ):
+            if command and command not in allowed_commands:
+                allowed_commands.append(command)
+
         return ProjectContext(
             project_name=self.project_name,
             repo_path=self.repo_path,
@@ -85,11 +101,13 @@ class BaseProjectPlugin:
             build_command=self.build_command(),
             deploy_staging_command=self.deploy_staging_command(),
             deploy_production_command=self.deploy_production_command(),
+            rollback_staging_command=self.rollback_staging_command(),
+            rollback_production_command=self.rollback_production_command(),
             allow_staging_deploy=bool(self.deploy_staging_command()),
             allow_production_deploy=False,
             artifact_root=self.artifact_root,
             project_rules=self.project_rules(),
-            allowed_commands=self.allowed_commands(),
+            allowed_commands=allowed_commands,
             protected_paths=self.protected_paths(),
             role_capability_overrides=self.role_capability_overrides(),
             trust_profile=self.trust_profile(),

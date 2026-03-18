@@ -58,6 +58,12 @@ def _base_parser() -> argparse.ArgumentParser:
     dep_prod = sub.add_parser("deploy-production")
     dep_prod.add_argument("--run-id", required=True)
 
+    approve_prod = sub.add_parser("approve-production")
+    approve_prod.add_argument("--run-id", required=True)
+    approve_prod.add_argument("--approved-by", required=True)
+    approve_prod.add_argument("--ticket", required=True)
+    approve_prod.add_argument("--reason", required=True)
+
     audit = sub.add_parser("audit")
     audit.add_argument("--run-id", required=True)
     return parser
@@ -125,6 +131,16 @@ async def _run_async(args: argparse.Namespace) -> int:
 
     if args.command == "deploy-production":
         state = await team.workflow.deploy_production(run_id=args.run_id)
+        print(json.dumps(state.to_dict(), indent=2, default=str))
+        return 0
+
+    if args.command == "approve-production":
+        state = team.workflow.approve_production(
+            run_id=args.run_id,
+            approved_by=args.approved_by,
+            ticket_id=args.ticket,
+            reason=args.reason,
+        )
         print(json.dumps(state.to_dict(), indent=2, default=str))
         return 0
 

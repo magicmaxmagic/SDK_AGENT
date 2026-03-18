@@ -92,6 +92,7 @@ class WorkflowEngine:
             trust_profile=self.context.trust_profile,
             branch_name=branch_name,
         )
+        state.human_approval_required = True
         state.artifacts_path = self.artifact_manager.run_dir(state.run_id)
         self.audit_logger = AuditLogger(run_dir=state.artifacts_path)
         persistence = StatePersistence(run_dir=state.artifacts_path)
@@ -163,7 +164,58 @@ class WorkflowEngine:
             self.artifact_manager.write_text(state.run_id, "deploy_plan.md", deploy_plan)
 
         self.audit_logger = AuditLogger(run_dir=self.context.resolved_artifact_root() / run_id)
-        self.audit_logger.record("deploy_staging_prepared", {"run_id": run_id})
+        self.audit_logger.record("deploy_staging_prepared", {"run_id": run_id}, role=RoleName.DEPLOYER.value, action=ActionType.DEPLOY_STAGING.value)
+
+        deploy_result = self._execute_deploy_command(target="staging")
+        state.deployment_history.append(
+            {
+                "target": "staging",
+                "command": self.context.deploy_staging_command,
+                "exit_code": deploy_result.exit_code,
+                "stdout": deploy_result.stdout,
+                "stderr": deploy_result.stderr,
+            }
+        )
+        if deploy_result.exit_code != 0:
+            state.rollback_required("staging deployment failed; triggering automatic rollback")
+            self.audit_logger.record(
+                "deploy_staging_failed",
+                {"run_id": run_id, "exit_code": deploy_result.exit_code},
+                status="failure",
+                role=RoleName.DEPLOYER.value,
+                action=ActionType.DEPLOY_STAGING.value,
+            )
+            self._run_automatic_rollback(state, target="staging", cause=deploy_result.stderr or deploy_result.stdout)
+        else:
+            self.audit_logger.record(
+                "deploy_staging_succeeded",
+                {"run_id": run_id, "exit_code": deploy_result.exit_code},
+                status="success",
+                role=RoleName.DEPLOYER.value,
+                action=ActionType.DEPLOY_STAGING.value,
+            )
+            state.add_event("deploy:staging:succeeded")
+
+        self._persist_state(state)
+        return state
+
+    def approve_production(self, run_id: str, approved_by: str, ticket_id: str, reason: str) -> WorkflowState:
+        state = self.status(run_id)
+        state.human_approval_required = False
+        state.production_approval = {
+            "approved_by": approved_by,
+            "ticket_id": ticket_id,
+            "reason": reason,
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.audit_logger = AuditLogger(run_dir=self.context.resolved_artifact_root() / run_id)
+        self.audit_logger.record(
+            "policy_production_approved",
+            {"run_id": run_id, "approved_by": approved_by, "ticket_id": ticket_id},
+            status="success",
+            role=RoleName.POLICY_ENFORCER.value,
+            action=ActionType.DEPLOY_PRODUCTION.value,
+        )
         self._persist_state(state)
         return state
 
@@ -176,8 +228,16 @@ class WorkflowEngine:
             self._persist_state(state)
             return state
 
-        if state.human_approval_required:
+        if state.human_approval_required or not state.production_approval:
             state.block("human approval required before production deploy")
+            self.audit_logger = AuditLogger(run_dir=self.context.resolved_artifact_root() / run_id)
+            self.audit_logger.record(
+                "policy_production_approval_missing",
+                {"run_id": run_id},
+                status="failure",
+                role=RoleName.POLICY_ENFORCER.value,
+                action=ActionType.DEPLOY_PRODUCTION.value,
+            )
             self._persist_state(state)
             return state
 
@@ -186,7 +246,40 @@ class WorkflowEngine:
             self.artifact_manager.write_text(state.run_id, "rollback_plan.md", state.rollback_plan)
 
         self.audit_logger = AuditLogger(run_dir=self.context.resolved_artifact_root() / run_id)
-        self.audit_logger.record("deploy_production_candidate", {"run_id": run_id})
+        self.audit_logger.record("deploy_production_candidate", {"run_id": run_id}, role=RoleName.DEPLOYER.value, action=ActionType.DEPLOY_PRODUCTION.value)
+
+        deploy_result = self._execute_deploy_command(target="production")
+        state.deployment_history.append(
+            {
+                "target": "production",
+                "command": self.context.deploy_production_command,
+                "exit_code": deploy_result.exit_code,
+                "stdout": deploy_result.stdout,
+                "stderr": deploy_result.stderr,
+                "approved_by": state.production_approval.get("approved_by") if state.production_approval else None,
+                "approval_ticket": state.production_approval.get("ticket_id") if state.production_approval else None,
+            }
+        )
+        if deploy_result.exit_code != 0:
+            state.rollback_required("production deployment failed; triggering automatic rollback")
+            self.audit_logger.record(
+                "deploy_production_failed",
+                {"run_id": run_id, "exit_code": deploy_result.exit_code},
+                status="failure",
+                role=RoleName.DEPLOYER.value,
+                action=ActionType.DEPLOY_PRODUCTION.value,
+            )
+            self._run_automatic_rollback(state, target="production", cause=deploy_result.stderr or deploy_result.stdout)
+        else:
+            self.audit_logger.record(
+                "deploy_production_succeeded",
+                {"run_id": run_id, "exit_code": deploy_result.exit_code},
+                status="success",
+                role=RoleName.DEPLOYER.value,
+                action=ActionType.DEPLOY_PRODUCTION.value,
+            )
+            state.add_event("deploy:production:succeeded")
+
         self._persist_state(state)
         return state
 
@@ -406,6 +499,88 @@ class WorkflowEngine:
             self.context.allowed_commands.extend(["git add", "git commit -m"])
         safe_run_command(self.context, "git add -A", role=RoleName.DEVELOPER.value)
         safe_run_command(self.context, f"git commit -m \"{commit_message}\"", role=RoleName.DEVELOPER.value)
+
+    def _execute_deploy_command(self, target: str):
+        if target == "staging":
+            command = self.context.deploy_staging_command
+        else:
+            command = self.context.deploy_production_command
+
+        if not command:
+            from sdk_agent.models import CommandResult
+
+            return CommandResult(
+                command="none",
+                exit_code=0,
+                stdout=f"No {target} deployment command configured; prepared plan only.",
+                stderr="",
+            )
+        return safe_run_command(self.context, command, role=RoleName.DEPLOYER.value)
+
+    def _run_automatic_rollback(self, state: WorkflowState, target: str, cause: str) -> None:
+        rollback_action = ActionType.ROLLBACK_STAGING if target == "staging" else ActionType.ROLLBACK_PRODUCTION
+        rollback_command = (
+            self.context.rollback_staging_command if target == "staging" else self.context.rollback_production_command
+        )
+        rollback_decision = self.policy_engine.evaluate(rollback_action, RoleName.DEPLOYER)
+        state.add_policy_decision(rollback_decision)
+
+        if not rollback_decision.allowed:
+            state.rollback_history.append(
+                {
+                    "target": target,
+                    "status": "blocked",
+                    "reason": rollback_decision.reason,
+                    "cause": cause,
+                }
+            )
+            self.audit_logger.record(
+                f"rollback_{target}_blocked",
+                {"run_id": state.run_id, "reason": rollback_decision.reason},
+                status="failure",
+                role=RoleName.DEPLOYER.value,
+                action=rollback_action.value,
+            )
+            return
+
+        if not rollback_command:
+            state.rollback_history.append(
+                {
+                    "target": target,
+                    "status": "missing_command",
+                    "reason": "rollback command not configured",
+                    "cause": cause,
+                }
+            )
+            self.audit_logger.record(
+                f"rollback_{target}_missing_command",
+                {"run_id": state.run_id},
+                status="failure",
+                role=RoleName.DEPLOYER.value,
+                action=rollback_action.value,
+            )
+            return
+
+        rollback_result = safe_run_command(self.context, rollback_command, role=RoleName.DEPLOYER.value)
+        rollback_entry = {
+            "target": target,
+            "command": rollback_command,
+            "exit_code": rollback_result.exit_code,
+            "stdout": rollback_result.stdout,
+            "stderr": rollback_result.stderr,
+            "cause": cause,
+        }
+        state.rollback_history.append(rollback_entry)
+        self.artifact_manager.write_json(state.run_id, f"rollback_{target}_result.json", rollback_entry)
+
+        event_name = f"rollback_{target}_{'succeeded' if rollback_result.exit_code == 0 else 'failed'}"
+        self.audit_logger.record(
+            event_name,
+            {"run_id": state.run_id, "exit_code": rollback_result.exit_code},
+            status="success" if rollback_result.exit_code == 0 else "failure",
+            role=RoleName.DEPLOYER.value,
+            action=rollback_action.value,
+        )
 
     def _persist_state(self, state: WorkflowState) -> None:
         StatePersistence(run_dir=state.artifacts_path).save(state)

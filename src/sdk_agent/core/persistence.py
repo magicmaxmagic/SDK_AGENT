@@ -50,6 +50,9 @@ class StatePersistence:
         state.release_notes = payload.get("release_notes")
         state.deploy_plan = payload.get("deploy_plan")
         state.rollback_plan = payload.get("rollback_plan")
+        state.production_approval = payload.get("production_approval")
+        state.deployment_history = payload.get("deployment_history", [])
+        state.rollback_history = payload.get("rollback_history", [])
         return state
 
 
