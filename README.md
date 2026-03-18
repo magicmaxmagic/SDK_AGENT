@@ -108,8 +108,10 @@ Main operational commands:
 - `status --run-id <id>`
 - `deploy-staging --run-id <id>`
 - `deploy-production --run-id <id>`
-- `approve-production --run-id <id> --approved-by <user> --ticket <id> --reason <text> [--expires-in-minutes <n>]`
+- `approve-staging --run-id <id> --approved-by <user> --ticket <id> --ticket-source <src> --reason <text> [--expires-in-minutes <n>]`
+- `approve-production --run-id <id> --approved-by <user> --ticket <id> --ticket-source <src> --reason <text> [--expires-in-minutes <n>]`
 - `audit --run-id <id> [--flat-fields]`
+- `audit-export-siem --run-id <id> [--flat-fields] [--batch-size <n>] [--max-file-size-bytes <n>]`
 
 Key options:
 - `--repo-path`
@@ -126,7 +128,10 @@ Key options:
 - `--allow-staging-deploy`
 - `--allow-production-deploy`
 - `--production-approval-validity-minutes`
+- `--required-staging-approvals`
 - `--required-production-approvals`
+- `--change-ticket-pattern`
+- `--allowed-ticket-sources`
 - `--dry-run`
 
 ## Usage Examples (uv)
@@ -161,16 +166,22 @@ Prepare staging deployment for a run:
 uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio deploy-staging --run-id run-abc123
 ~~~
 
+Add explicit human approval before staging deployment:
+
+~~~bash
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio approve-staging --run-id run-abc123 --approved-by qa.lead --ticket INC-4242 --ticket-source itsm --reason "Staging gate"
+~~~
+
 Add explicit human approval before production deployment:
 
 ~~~bash
-uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio approve-production --run-id run-abc123 --approved-by oncall.lead --ticket CHG-4242 --reason "CAB approved"
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio approve-production --run-id run-abc123 --approved-by oncall.lead --ticket CHG-4242 --ticket-source cab --reason "CAB approved"
 ~~~
 
 Second approval for 4-eyes before production deployment:
 
 ~~~bash
-uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio approve-production --run-id run-abc123 --approved-by sre.lead --ticket CHG-4243 --reason "Second approval" --expires-in-minutes 60
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio approve-production --run-id run-abc123 --approved-by sre.lead --ticket CHG-4243 --ticket-source jira --reason "Second approval" --expires-in-minutes 60
 ~~~
 
 Deploy to production after approval:
@@ -191,9 +202,17 @@ Read audit trail with flat ECS-like fields (SIEM ingestion):
 uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio audit --run-id run-abc123 --flat-fields
 ~~~
 
+Export dedicated SIEM NDJSON batches with file rotation:
+
+~~~bash
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio audit-export-siem --run-id run-abc123 --flat-fields --batch-size 1000 --max-file-size-bytes 1048576
+~~~
+
 Audit events are SIEM-compatible and versioned (`schema_version=siem.audit.v1`, `event_version=1`) with stable fields such as `event_type`, `run_id`, `correlation_id`, `actor_role`, `action`, and `siem.event.*` mappings.
 
-Production deploy now enforces 4-eyes with expiry-aware approvals. By default, two distinct active approvals are required and each approval is valid for 120 minutes (configurable via CLI options).
+Ticket validation is strict before any approval is accepted: ticket id must match `--change-ticket-pattern` and `--ticket-source` must be listed in `--allowed-ticket-sources`.
+
+Approval quorum is environment/target-aware: staging defaults to 2 active distinct approvals, production defaults to 3 active distinct approvals. Approval validity defaults to 120 minutes.
 
 Dry-run simulation:
 

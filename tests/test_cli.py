@@ -48,6 +48,8 @@ def test_cli_approve_production_parsing() -> None:
             "oncall.lead",
             "--ticket",
             "CHG-4242",
+            "--ticket-source",
+            "cab",
             "--reason",
             "CAB approved",
             "--expires-in-minutes",
@@ -56,7 +58,29 @@ def test_cli_approve_production_parsing() -> None:
     )
     assert args.command == "approve-production"
     assert args.approved_by == "oncall.lead"
+    assert args.ticket_source == "cab"
     assert args.expires_in_minutes == 45
+
+
+def test_cli_approve_staging_parsing() -> None:
+    parser = _base_parser()
+    args = parser.parse_args(
+        [
+            "approve-staging",
+            "--run-id",
+            "run-1",
+            "--approved-by",
+            "release.manager",
+            "--ticket",
+            "INC-7788",
+            "--ticket-source",
+            "itsm",
+            "--reason",
+            "staging gate",
+        ]
+    )
+    assert args.command == "approve-staging"
+    assert args.ticket_source == "itsm"
 
 
 def test_cli_audit_flat_fields_parsing() -> None:
@@ -64,3 +88,22 @@ def test_cli_audit_flat_fields_parsing() -> None:
     args = parser.parse_args(["audit", "--run-id", "run-1", "--flat-fields"])
     assert args.command == "audit"
     assert args.flat_fields is True
+
+
+def test_cli_audit_export_siem_parsing() -> None:
+    parser = _base_parser()
+    args = parser.parse_args(
+        [
+            "audit-export-siem",
+            "--run-id",
+            "run-1",
+            "--flat-fields",
+            "--batch-size",
+            "100",
+            "--max-file-size-bytes",
+            "2048",
+        ]
+    )
+    assert args.command == "audit-export-siem"
+    assert args.batch_size == 100
+    assert args.max_file_size_bytes == 2048

@@ -35,7 +35,10 @@ def _base_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-staging-deploy", action="store_true")
     parser.add_argument("--allow-production-deploy", action="store_true")
     parser.add_argument("--production-approval-validity-minutes", type=int, default=120)
-    parser.add_argument("--required-production-approvals", type=int, default=2)
+    parser.add_argument("--required-staging-approvals", type=int, default=2)
+    parser.add_argument("--required-production-approvals", type=int, default=3)
+    parser.add_argument("--change-ticket-pattern", default=r"^(CHG|RFC|INC)-[0-9]{3,}$")
+    parser.add_argument("--allowed-ticket-sources", default="cab,itsm,jira")
     parser.add_argument("--enable-tester-mcp", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--max-fix-iterations", type=int, default=2)
@@ -60,16 +63,31 @@ def _base_parser() -> argparse.ArgumentParser:
     dep_prod = sub.add_parser("deploy-production")
     dep_prod.add_argument("--run-id", required=True)
 
+    approve_staging = sub.add_parser("approve-staging")
+    approve_staging.add_argument("--run-id", required=True)
+    approve_staging.add_argument("--approved-by", required=True)
+    approve_staging.add_argument("--ticket", required=True)
+    approve_staging.add_argument("--ticket-source", required=True)
+    approve_staging.add_argument("--reason", required=True)
+    approve_staging.add_argument("--expires-in-minutes", type=int, default=None)
+
     approve_prod = sub.add_parser("approve-production")
     approve_prod.add_argument("--run-id", required=True)
     approve_prod.add_argument("--approved-by", required=True)
     approve_prod.add_argument("--ticket", required=True)
+    approve_prod.add_argument("--ticket-source", required=True)
     approve_prod.add_argument("--reason", required=True)
     approve_prod.add_argument("--expires-in-minutes", type=int, default=None)
 
     audit = sub.add_parser("audit")
     audit.add_argument("--run-id", required=True)
     audit.add_argument("--flat-fields", action="store_true")
+
+    audit_export = sub.add_parser("audit-export-siem")
+    audit_export.add_argument("--run-id", required=True)
+    audit_export.add_argument("--flat-fields", action="store_true")
+    audit_export.add_argument("--batch-size", type=int, default=500)
+    audit_export.add_argument("--max-file-size-bytes", type=int, default=1_000_000)
     return parser
 
 
@@ -103,7 +121,10 @@ async def _run_async(args: argparse.Namespace) -> int:
     team = build_team(plugin=plugin, model=args.model, max_fix_iterations=args.max_fix_iterations)
     team.workflow.context.dry_run = args.dry_run
     team.workflow.context.production_approval_validity_minutes = args.production_approval_validity_minutes
+    team.workflow.context.required_staging_approvals = args.required_staging_approvals
     team.workflow.context.required_production_approvals = args.required_production_approvals
+    team.workflow.context.change_ticket_pattern = args.change_ticket_pattern
+    team.workflow.context.allowed_ticket_sources = [value.strip().lower() for value in args.allowed_ticket_sources.split(",") if value.strip()]
 
     if args.command in {"feature", "bugfix", "plan", "validate", "review"}:
         request = getattr(args, "request", "") or f"{args.command} workflow"
@@ -140,11 +161,24 @@ async def _run_async(args: argparse.Namespace) -> int:
         print(json.dumps(state.to_dict(), indent=2, default=str))
         return 0
 
+    if args.command == "approve-staging":
+        state = team.workflow.approve_staging(
+            run_id=args.run_id,
+            approved_by=args.approved_by,
+            ticket_id=args.ticket,
+            ticket_source=args.ticket_source,
+            reason=args.reason,
+            expires_in_minutes=args.expires_in_minutes,
+        )
+        print(json.dumps(state.to_dict(), indent=2, default=str))
+        return 0
+
     if args.command == "approve-production":
         state = team.workflow.approve_production(
             run_id=args.run_id,
             approved_by=args.approved_by,
             ticket_id=args.ticket,
+            ticket_source=args.ticket_source,
             reason=args.reason,
             expires_in_minutes=args.expires_in_minutes,
         )
@@ -154,6 +188,16 @@ async def _run_async(args: argparse.Namespace) -> int:
     if args.command == "audit":
         payload = team.workflow.read_audit(run_id=args.run_id, flat_fields=args.flat_fields)
         print(json.dumps(payload, indent=2, default=str))
+        return 0
+
+    if args.command == "audit-export-siem":
+        paths = team.workflow.export_audit_siem_ndjson(
+            run_id=args.run_id,
+            flat_fields=args.flat_fields,
+            batch_size=args.batch_size,
+            max_file_size_bytes=args.max_file_size_bytes,
+        )
+        print(json.dumps({"files": [str(path) for path in paths]}, indent=2, default=str))
         return 0
 
     raise ValueError(f"Unsupported command: {args.command}")

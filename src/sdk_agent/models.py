@@ -182,7 +182,9 @@ class WorkflowState:
     human_approval_required: bool = True
     production_approval: dict[str, Any] | None = None
     production_approvals: list[dict[str, Any]] = field(default_factory=list)
-    required_production_approvals: int = 2
+    deployment_approvals: list[dict[str, Any]] = field(default_factory=list)
+    required_staging_approvals: int = 2
+    required_production_approvals: int = 3
     production_approval_validity_minutes: int = 120
     deployment_history: list[dict[str, Any]] = field(default_factory=list)
     rollback_history: list[dict[str, Any]] = field(default_factory=list)
