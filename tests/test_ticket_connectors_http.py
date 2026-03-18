@@ -149,3 +149,41 @@ def test_connector_circuit_breaker_opens_on_repeated_network_failure(monkeypatch
     assert second.valid is False
     assert "circuit breaker open" in second.reason
     assert calls["count"] == 1
+
+
+def test_circuit_breaker_state_persists_across_memory_reset(monkeypatch, tmp_path) -> None:
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
+        calls["count"] += 1
+        raise URLError("down")
+
+    monkeypatch.setattr(connectors, "urlopen", fake_urlopen)
+    monkeypatch.setattr(connectors.time, "sleep", lambda _seconds: None)
+    connectors._CIRCUIT_BREAKERS.clear()
+
+    state_file = tmp_path / "circuit_state.json"
+    connector = connectors.build_ticket_connector(
+        "jira",
+        {
+            "base_url": "https://jira.example.com",
+            "auth_mode": "bearer",
+            "accepted_sources": ["jira"],
+            "retry_attempts": 1,
+            "backoff_initial_seconds": 0,
+            "circuit_failure_threshold": 1,
+            "circuit_reset_seconds": 120,
+            "circuit_state_file": str(state_file),
+        },
+    )
+
+    first = connector.validate("CHG-5001", "jira")
+    assert first.valid is False
+    assert state_file.exists()
+    assert calls["count"] == 1
+
+    connectors._CIRCUIT_BREAKERS.clear()
+    second = connector.validate("CHG-5001", "jira")
+    assert second.valid is False
+    assert "circuit breaker open" in second.reason
+    assert calls["count"] == 1

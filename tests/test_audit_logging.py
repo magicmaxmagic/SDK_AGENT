@@ -62,3 +62,31 @@ def test_ticket_validation_log_is_chain_signed(tmp_path: Path) -> None:
     second = json.loads(lines[1])
     assert first["forensics"]["chain_hash"]
     assert second["forensics"]["prev_hash"] == first["forensics"]["chain_hash"]
+
+
+def test_verify_chain_success(tmp_path: Path) -> None:
+    logger = AuditLogger(run_dir=tmp_path / "run-5")
+    logger.record("phase", {"run_id": "run-5", "value": "plan"})
+    logger.record_ticket_validation({"run_id": "run-5", "ticket_id": "CHG-1001", "status": "approved"})
+    logger.export_siem_ndjson(flat_fields=True, batch_size=10, max_file_size_bytes=1024)
+
+    report = logger.verify_chain(include_siem_exports=True)
+    assert report["valid"] is True
+    assert report["audit_log"]["valid"] is True
+    assert report["ticket_validation_log"]["valid"] is True
+
+
+def test_verify_chain_detects_tampering(tmp_path: Path) -> None:
+    logger = AuditLogger(run_dir=tmp_path / "run-6")
+    logger.record("phase", {"run_id": "run-6", "value": "plan"})
+    logger.record("phase", {"run_id": "run-6", "value": "validate"})
+
+    lines = logger.audit_file.read_text(encoding="utf-8").splitlines()
+    payload = json.loads(lines[1])
+    payload["data"]["value"] = "tampered"
+    lines[1] = json.dumps(payload, ensure_ascii=True)
+    logger.audit_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    report = logger.verify_chain(include_siem_exports=False)
+    assert report["valid"] is False
+    assert report["audit_log"]["valid"] is False

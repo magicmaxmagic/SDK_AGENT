@@ -131,6 +131,52 @@ class AuditLogger:
         (export_dir / "siem_export_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=True), encoding="utf-8")
         return exported
 
+    def verify_chain(self, *, include_siem_exports: bool = True) -> dict[str, Any]:
+        audit_report = _verify_signed_jsonl_file(self.audit_file)
+        ticket_report = _verify_signed_jsonl_file(self.ticket_validation_file)
+
+        siem_report: dict[str, Any] = {"valid": True, "checked": False, "reason": "siem verification skipped"}
+        if include_siem_exports:
+            siem_report = self._verify_siem_exports()
+
+        overall_valid = bool(audit_report.get("valid", False)) and bool(ticket_report.get("valid", False)) and bool(siem_report.get("valid", False))
+        return {
+            "valid": overall_valid,
+            "audit_log": audit_report,
+            "ticket_validation_log": ticket_report,
+            "siem_exports": siem_report,
+        }
+
+    def _verify_siem_exports(self) -> dict[str, Any]:
+        export_dir = self.run_dir / "siem_exports"
+        if not export_dir.exists():
+            return {"valid": True, "checked": True, "reason": "no siem exports"}
+
+        manifest_path = export_dir / "siem_export_manifest.json"
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                return {"valid": False, "checked": True, "reason": "invalid siem manifest JSON"}
+
+            files = []
+            for item in manifest.get("files", []):
+                if isinstance(item, str) and item.strip():
+                    files.append(export_dir / item)
+            report = _verify_signed_jsonl_paths(files)
+            report["checked"] = True
+            if report.get("valid", False):
+                expected = manifest.get("final_chain_hash")
+                if expected != report.get("final_hash"):
+                    report["valid"] = False
+                    report["reason"] = "manifest final_chain_hash mismatch"
+            return report
+
+        files = sorted(export_dir.glob("siem_export_*.ndjson"))
+        report = _verify_signed_jsonl_paths(files)
+        report["checked"] = True
+        return report
+
 
 def _siem_mapping(event: str) -> dict[str, str]:
     if event.startswith("policy_"):
@@ -271,3 +317,67 @@ def _last_chain_hash(path: Path) -> str | None:
     if not isinstance(payload, dict):
         return None
     return _extract_chain_hash(payload)
+
+
+def _verify_signed_jsonl_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"valid": True, "entries": 0, "final_hash": None, "reason": "file missing"}
+    return _verify_signed_jsonl_paths([path])
+
+
+def _verify_signed_jsonl_paths(paths: list[Path]) -> dict[str, Any]:
+    previous_hash: str | None = None
+    entries = 0
+    for path in paths:
+        if not path.exists():
+            return {"valid": False, "entries": entries, "final_hash": previous_hash, "reason": f"missing file: {path.name}"}
+        for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line.strip():
+                continue
+            entries += 1
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                return {
+                    "valid": False,
+                    "entries": entries,
+                    "final_hash": previous_hash,
+                    "reason": f"invalid JSON at {path.name}:{line_no}",
+                }
+            if not isinstance(payload, dict):
+                return {
+                    "valid": False,
+                    "entries": entries,
+                    "final_hash": previous_hash,
+                    "reason": f"invalid payload type at {path.name}:{line_no}",
+                }
+            forensics = payload.get("forensics")
+            if not isinstance(forensics, dict):
+                return {
+                    "valid": False,
+                    "entries": entries,
+                    "final_hash": previous_hash,
+                    "reason": f"missing forensics at {path.name}:{line_no}",
+                }
+            if forensics.get("prev_hash") != previous_hash:
+                return {
+                    "valid": False,
+                    "entries": entries,
+                    "final_hash": previous_hash,
+                    "reason": f"prev_hash mismatch at {path.name}:{line_no}",
+                }
+
+            unsigned_payload = dict(payload)
+            unsigned_payload.pop("forensics", None)
+            expected = _with_chain_signature(unsigned_payload, previous_hash=previous_hash).get("forensics", {}).get("chain_hash")
+            current = forensics.get("chain_hash")
+            if expected != current:
+                return {
+                    "valid": False,
+                    "entries": entries,
+                    "final_hash": previous_hash,
+                    "reason": f"chain_hash mismatch at {path.name}:{line_no}",
+                }
+            previous_hash = current if isinstance(current, str) else previous_hash
+
+    return {"valid": True, "entries": entries, "final_hash": previous_hash}

@@ -107,3 +107,10 @@ def test_cli_audit_export_siem_parsing() -> None:
     assert args.command == "audit-export-siem"
     assert args.batch_size == 100
     assert args.max_file_size_bytes == 2048
+
+
+def test_cli_audit_verify_chain_parsing() -> None:
+    parser = _base_parser()
+    args = parser.parse_args(["audit-verify-chain", "--run-id", "run-1", "--skip-siem-exports"])
+    assert args.command == "audit-verify-chain"
+    assert args.skip_siem_exports is True

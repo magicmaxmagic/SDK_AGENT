@@ -85,6 +85,10 @@ def _base_parser() -> argparse.ArgumentParser:
     audit.add_argument("--run-id", required=True)
     audit.add_argument("--flat-fields", action="store_true")
 
+    audit_verify = sub.add_parser("audit-verify-chain")
+    audit_verify.add_argument("--run-id", required=True)
+    audit_verify.add_argument("--skip-siem-exports", action="store_true")
+
     audit_export = sub.add_parser("audit-export-siem")
     audit_export.add_argument("--run-id", required=True)
     audit_export.add_argument("--flat-fields", action="store_true")
@@ -197,6 +201,14 @@ async def _run_async(args: argparse.Namespace) -> int:
         payload = team.workflow.read_audit(run_id=args.run_id, flat_fields=args.flat_fields)
         print(json.dumps(payload, indent=2, default=str))
         return 0
+
+    if args.command == "audit-verify-chain":
+        payload = team.workflow.verify_audit_chain(
+            run_id=args.run_id,
+            include_siem_exports=not args.skip_siem_exports,
+        )
+        print(json.dumps(payload, indent=2, default=str))
+        return 0 if payload.get("valid") else 2
 
     if args.command == "audit-export-siem":
         paths = team.workflow.export_audit_siem_ndjson(

@@ -112,6 +112,7 @@ Main operational commands:
 - `approve-production --run-id <id> --approved-by <user> --ticket <id> --ticket-source <src> --reason <text> [--expires-in-minutes <n>]`
 - `audit --run-id <id> [--flat-fields]`
 - `audit-export-siem --run-id <id> [--flat-fields] [--batch-size <n>] [--max-file-size-bytes <n>]`
+- `audit-verify-chain --run-id <id> [--skip-siem-exports]`
 
 Key options:
 - `--repo-path`
@@ -208,6 +209,12 @@ Export dedicated SIEM NDJSON batches with file rotation:
 uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio audit-export-siem --run-id run-abc123 --flat-fields --batch-size 1000 --max-file-size-bytes 1048576
 ~~~
 
+Verify forensics chain integrity:
+
+~~~bash
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio audit-verify-chain --run-id run-abc123
+~~~
+
 Audit events are SIEM-compatible and versioned (`schema_version=siem.audit.v1`, `event_version=1`) with stable fields such as `event_type`, `run_id`, `correlation_id`, `actor_role`, `action`, and `siem.event.*` mappings.
 
 Forensics reinforcement: audit events, ticket validation logs, and SIEM NDJSON exports are chain-signed (`sha256`) with `forensics.prev_hash`/`forensics.chain_hash`, and SIEM export writes `siem_export_manifest.json` with final chain hash.
@@ -215,6 +222,8 @@ Forensics reinforcement: audit events, ticket validation logs, and SIEM NDJSON e
 Ticket validation now runs through an external connector (`mock`, `jira`, `servicenow`, or `composite`) configured by plugin/project policy. CLI can override via `--ticket-connector` and `--ticket-connector-settings`.
 
 Connector HTTP resilience supports retry/backoff and circuit breaker controls through `--ticket-connector-settings` (for example: `retry_attempts`, `backoff_initial_seconds`, `backoff_multiplier`, `circuit_failure_threshold`, `circuit_reset_seconds`, `timeout_seconds`).
+
+Circuit breaker state can be persisted cross-process with a local TTL file using connector setting `circuit_state_file` (or env var `SDK_AGENT_CIRCUIT_STATE_FILE`) so protection survives restarts.
 
 Example Jira HTTP connector override:
 

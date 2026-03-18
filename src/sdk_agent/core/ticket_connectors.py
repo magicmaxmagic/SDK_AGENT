@@ -25,7 +25,7 @@ class TicketValidationResult:
 @dataclass(slots=True)
 class CircuitBreakerState:
     consecutive_network_failures: int = 0
-    opened_until_monotonic: float = 0.0
+    opened_until_epoch: float = 0.0
 
 
 _CIRCUIT_BREAKERS: dict[str, CircuitBreakerState] = {}
@@ -351,7 +351,7 @@ def _resilient_http_get_json(
     timeout_seconds = _timeout(settings)
 
     breaker_key = _circuit_breaker_key(provider, base_url)
-    if _circuit_is_open(breaker_key):
+    if _circuit_is_open(breaker_key, settings=settings):
         return None, "circuit breaker open: temporary block due to repeated network failures"
 
     delay = backoff_initial
@@ -359,7 +359,7 @@ def _resilient_http_get_json(
     for attempt in range(max_attempts):
         payload, error, error_kind = _http_get_json_once(url, headers=headers, timeout_seconds=timeout_seconds)
         if error is None:
-            _circuit_record_success(breaker_key)
+            _circuit_record_success(breaker_key, settings=settings)
             return payload, None
 
         last_error = error
@@ -370,7 +370,12 @@ def _resilient_http_get_json(
             time.sleep(delay)
             delay *= backoff_multiplier
 
-    _circuit_record_network_failure(breaker_key, threshold=failure_threshold, reset_seconds=reset_seconds)
+    _circuit_record_network_failure(
+        breaker_key,
+        settings=settings,
+        threshold=failure_threshold,
+        reset_seconds=reset_seconds,
+    )
     return None, last_error
 
 
@@ -378,27 +383,33 @@ def _circuit_breaker_key(provider: str, base_url: str) -> str:
     return f"{provider}:{base_url.strip().lower()}"
 
 
-def _circuit_is_open(key: str) -> bool:
-    state = _CIRCUIT_BREAKERS.get(key)
+def _circuit_is_open(key: str, *, settings: dict[str, Any]) -> bool:
+    state = _breaker_state_get(key, settings=settings)
     if state is None:
         return False
-    return state.opened_until_monotonic > time.monotonic()
+    now = time.time()
+    if state.opened_until_epoch > now:
+        return True
+    state.opened_until_epoch = 0.0
+    _breaker_state_put(key, state, settings=settings)
+    return False
 
 
-def _circuit_record_success(key: str) -> None:
+def _circuit_record_success(key: str, *, settings: dict[str, Any]) -> None:
     _CIRCUIT_BREAKERS.pop(key, None)
+    _breaker_state_delete(key, settings=settings)
 
 
-def _circuit_record_network_failure(key: str, *, threshold: int, reset_seconds: float) -> None:
-    state = _CIRCUIT_BREAKERS.get(key)
+def _circuit_record_network_failure(key: str, *, settings: dict[str, Any], threshold: int, reset_seconds: float) -> None:
+    state = _breaker_state_get(key, settings=settings)
     if state is None:
         state = CircuitBreakerState()
-        _CIRCUIT_BREAKERS[key] = state
 
     state.consecutive_network_failures += 1
     if state.consecutive_network_failures >= threshold:
-        state.opened_until_monotonic = time.monotonic() + reset_seconds
+        state.opened_until_epoch = time.time() + reset_seconds
         state.consecutive_network_failures = 0
+    _breaker_state_put(key, state, settings=settings)
 
 
 def _int_setting(settings: dict[str, Any], key: str, *, default: int, minimum: int) -> int:
@@ -417,3 +428,68 @@ def _float_setting(settings: dict[str, Any], key: str, *, default: float, minimu
     except (TypeError, ValueError):
         return default
     return max(minimum, value)
+
+
+def _breaker_state_get(key: str, *, settings: dict[str, Any]) -> CircuitBreakerState | None:
+    if key in _CIRCUIT_BREAKERS:
+        return _CIRCUIT_BREAKERS[key]
+    persisted = _load_breaker_file(settings=settings)
+    payload = persisted.get(key)
+    if not isinstance(payload, dict):
+        return None
+    state = CircuitBreakerState(
+        consecutive_network_failures=int(payload.get("consecutive_network_failures", 0) or 0),
+        opened_until_epoch=float(payload.get("opened_until_epoch", 0.0) or 0.0),
+    )
+    _CIRCUIT_BREAKERS[key] = state
+    return state
+
+
+def _breaker_state_put(key: str, state: CircuitBreakerState, *, settings: dict[str, Any]) -> None:
+    _CIRCUIT_BREAKERS[key] = state
+    persisted = _load_breaker_file(settings=settings)
+    persisted[key] = {
+        "consecutive_network_failures": state.consecutive_network_failures,
+        "opened_until_epoch": state.opened_until_epoch,
+        "updated_at_epoch": time.time(),
+    }
+    _save_breaker_file(settings=settings, payload=persisted)
+
+
+def _breaker_state_delete(key: str, *, settings: dict[str, Any]) -> None:
+    persisted = _load_breaker_file(settings=settings)
+    if key in persisted:
+        del persisted[key]
+        _save_breaker_file(settings=settings, payload=persisted)
+
+
+def _breaker_state_file(settings: dict[str, Any]) -> Path:
+    raw = settings.get("circuit_state_file")
+    if raw:
+        return Path(str(raw)).expanduser()
+    env_value = os.getenv("SDK_AGENT_CIRCUIT_STATE_FILE", "").strip()
+    if env_value:
+        return Path(env_value).expanduser()
+    return Path.home() / ".sdk_agent" / "circuit_breakers.json"
+
+
+def _load_breaker_file(*, settings: dict[str, Any]) -> dict[str, Any]:
+    path = _breaker_state_file(settings)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _save_breaker_file(*, settings: dict[str, Any], payload: dict[str, Any]) -> None:
+    path = _breaker_state_file(settings)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        return
