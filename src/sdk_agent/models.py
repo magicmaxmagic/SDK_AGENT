@@ -155,13 +155,17 @@ class ValidationSummary:
 @dataclass(slots=True)
 class WorkflowState:
     run_id: str
+    task_id: str | None
     workflow_kind: FlowType
+    repo_path: str | None
+    project_name: str | None
     autonomy_level: AutonomyLevel
     trust_profile: TrustProfile
     branch_name: str | None
     worktree_path: str | None
     original_request: str
     current_phase: str
+    current_node_id: str | None
     artifacts_path: Path
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     implementation_plan: str | None = None
@@ -171,6 +175,7 @@ class WorkflowState:
     test_result: CommandResult | None = None
     validation_history: list[ValidationRecord] = field(default_factory=list)
     review_findings: list[ReviewFinding] = field(default_factory=list)
+    security_findings: list[ReviewFinding] = field(default_factory=list)
     review_history: list[ReviewRecord] = field(default_factory=list)
     release_notes: str | None = None
     deploy_plan: str | None = None
@@ -189,6 +194,8 @@ class WorkflowState:
     deployment_history: list[dict[str, Any]] = field(default_factory=list)
     rollback_history: list[dict[str, Any]] = field(default_factory=list)
     pending_actions: list[str] = field(default_factory=list)
+    retry_counters: dict[str, int] = field(default_factory=dict)
+    execution_history: list[dict[str, Any]] = field(default_factory=list)
     tool_results: list[dict[str, Any]] = field(default_factory=list)
     policy_decisions: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -207,13 +214,17 @@ class WorkflowState:
     ) -> "WorkflowState":
         return cls(
             run_id=f"run-{uuid4().hex[:12]}",
+            task_id=None,
             workflow_kind=flow,
+            repo_path=None,
+            project_name=None,
             autonomy_level=autonomy_level,
             trust_profile=trust_profile,
             branch_name=branch_name,
             worktree_path=worktree_path,
             original_request=request,
             current_phase="init",
+            current_node_id=None,
             artifacts_path=artifacts_path,
         )
 

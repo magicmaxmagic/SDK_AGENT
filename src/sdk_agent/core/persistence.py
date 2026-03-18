@@ -38,7 +38,11 @@ class StatePersistence:
             worktree_path=payload.get("worktree_path"),
         )
         state.run_id = payload["run_id"]
+        state.task_id = payload.get("task_id")
+        state.repo_path = payload.get("repo_path")
+        state.project_name = payload.get("project_name")
         state.current_phase = payload.get("current_phase", "resumed")
+        state.current_node_id = payload.get("current_node_id")
         state.final_status = WorkflowStatus(payload.get("final_status", "running"))
         state.changed_files = payload.get("changed_files", [])
         state.events = payload.get("events", [])
@@ -58,6 +62,8 @@ class StatePersistence:
         state.production_approval_validity_minutes = payload.get("production_approval_validity_minutes", 120)
         state.deployment_history = payload.get("deployment_history", [])
         state.rollback_history = payload.get("rollback_history", [])
+        state.retry_counters = payload.get("retry_counters", {})
+        state.execution_history = payload.get("execution_history", [])
         return state
 
 

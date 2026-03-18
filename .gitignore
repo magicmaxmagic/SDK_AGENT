@@ -11,3 +11,7 @@ dist/
 htmlcov/
 .env
 .DS_Store
+apps/web/node_modules/
+apps/web/.next/
+apps/web/.env.local
+apps/web/.vercel/

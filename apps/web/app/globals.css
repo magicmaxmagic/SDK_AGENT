@@ -1,0 +1,94 @@
+:root {
+  --bg: #f3eee3;
+  --panel: #fffaf0;
+  --ink: #1c1a17;
+  --accent: #c4512d;
+  --accent-2: #1e6f5c;
+  --muted: #6b6258;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 600px at 10% -10%, #f9d0a3 0%, transparent 60%),
+    radial-gradient(900px 450px at 90% 0%, #9dc8b4 0%, transparent 60%),
+    var(--bg);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+main {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 2rem 1.2rem 3rem;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid #e8dccd;
+  border-radius: 16px;
+  padding: 1.2rem;
+  box-shadow: 0 10px 24px rgba(26, 22, 17, 0.06);
+}
+
+h1, h2 {
+  font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  border: 0;
+  background: var(--accent);
+  color: white;
+  border-radius: 10px;
+  padding: 0.65rem 1rem;
+  cursor: pointer;
+}
+
+input {
+  width: 100%;
+  border: 1px solid #d9ccbb;
+  background: #fffcf5;
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+}
+
+.form-row {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 0.8rem;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.2rem;
+}
+
+.badge {
+  background: color-mix(in srgb, var(--accent-2) 18%, white);
+  color: var(--accent-2);
+  padding: 0.3rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+@media (max-width: 640px) {
+  main {
+    padding: 1.2rem 0.9rem 2rem;
+  }
+}

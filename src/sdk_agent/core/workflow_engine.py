@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,10 @@ from sdk_agent.core.sensitivity import classify_sensitive_changes
 from sdk_agent.core.ticket_connectors import ChangeTicketConnector
 from sdk_agent.core.transitions import can_retry, should_rework_from_review, should_rework_from_validation
 from sdk_agent.core.workflow_state import WorkflowStateStore
+from sdk_agent.graph.builder import build_workflow_definition
+from sdk_agent.graph.execution_view import build_execution_view
+from sdk_agent.graph.models import NodeExecutionState, NodeStatus
+from sdk_agent.graph.serializer import serialize_definition
 from sdk_agent.logging_config import get_logger
 from sdk_agent.mcp import codex_mcp_server
 from sdk_agent.models import (
@@ -94,16 +99,22 @@ class WorkflowEngine:
             trust_profile=self.context.trust_profile,
             branch_name=branch_name,
         )
+        definition = build_workflow_definition(flow)
         state.human_approval_required = True
+        state.task_id = state.run_id
+        state.repo_path = str(self.context.repo_path)
+        state.project_name = self.context.project_name
         state.required_staging_approvals = self.context.required_staging_approvals
         state.required_production_approvals = self.context.required_production_approvals
         state.production_approval_validity_minutes = self.context.production_approval_validity_minutes
         state.artifacts_path = self.artifact_manager.run_dir(state.run_id)
+        state.current_node_id = definition.entry_node_id
         self.audit_logger = AuditLogger(run_dir=state.artifacts_path)
         persistence = StatePersistence(run_dir=state.artifacts_path)
         store = WorkflowStateStore(state)
 
         self.audit_logger.record("workflow_started", {"run_id": state.run_id, "flow": flow.value})
+        self.artifact_manager.write_json(state.run_id, "definition.json", serialize_definition(definition))
         persistence.save(state)
 
         try:
@@ -129,6 +140,7 @@ class WorkflowEngine:
         self.artifact_manager.write_json(state.run_id, "state.json", state.to_dict())
         self.artifact_manager.write_json(state.run_id, "final_summary.json", state.to_dict())
         self.audit_logger.record("workflow_finished", {"run_id": state.run_id, "status": state.final_status.value})
+        self._persist_graph_view(state)
         return state
 
     def resume(self, run_id: str) -> WorkflowState:
@@ -149,6 +161,33 @@ class WorkflowEngine:
         run_dir = self.context.resolved_artifact_root() / run_id
         logger = AuditLogger(run_dir=run_dir)
         return logger.read_flat() if flat_fields else logger.read_all()
+
+    def inspect_graph(self, run_id: str) -> dict[str, Any]:
+        run_dir = self.context.resolved_artifact_root() / run_id
+        definition_file = run_dir / "definition.json"
+        if definition_file.exists():
+            return json.loads(definition_file.read_text(encoding="utf-8"))
+        state = self.status(run_id)
+        definition = build_workflow_definition(state.workflow_kind)
+        return serialize_definition(definition)
+
+    def inspect_run(self, run_id: str) -> dict[str, Any]:
+        state = self.status(run_id)
+        graph = self.inspect_graph(run_id)
+        run_dir = self.context.resolved_artifact_root() / run_id
+        history_file = run_dir / "execution_history.json"
+        execution_history = []
+        if history_file.exists():
+            execution_history = json.loads(history_file.read_text(encoding="utf-8")).get("history", [])
+        audit_count = len(self.read_audit(run_id))
+        return {
+            "run_id": run_id,
+            "state": state.to_dict(),
+            "graph": graph,
+            "execution_history": execution_history,
+            "artifacts": sorted(item.name for item in run_dir.iterdir()) if run_dir.exists() else [],
+            "audit_event_count": audit_count,
+        }
 
     def export_audit_siem_ndjson(
         self,
@@ -532,23 +571,33 @@ class WorkflowEngine:
 
     async def _run_plan(self, store: WorkflowStateStore) -> None:
         store.mark_phase("plan")
+        self._record_node_execution(store.state, "plan", NodeStatus.RUNNING.value, {"request": store.state.original_request})
         store.state.checkpoint("plan")
         plan = await self._role_run(RoleName.PLANNER, self.planner, self._planner_prompt(store.state.original_request))
         store.set_plan(plan)
         self.artifact_manager.write_text(store.state.run_id, "plan.md", plan)
+        self._record_node_execution(store.state, "plan", NodeStatus.COMPLETED.value, output_payload={"accepted": store.state.accepted_plan})
         self._persist_state(store.state)
 
     async def _run_validate(self, store: WorkflowStateStore) -> None:
         store.mark_phase("validate")
+        self._record_node_execution(store.state, "validate", NodeStatus.RUNNING.value)
         validation = self._run_validation_commands(store.state)
         self._record_validation(store, validation)
         review_text = await self._role_run(RoleName.REVIEWER, self.reviewer, self._review_prompt(store.state, "validation-only"))
         findings = parse_review_findings(review_text)
         self._record_review(store, findings)
+        self._record_node_execution(
+            store.state,
+            "validate",
+            NodeStatus.COMPLETED.value if validation.passed else NodeStatus.FAILED.value,
+            output_payload={"validation_passed": validation.passed},
+        )
         self._persist_state(store.state)
 
     async def _run_review(self, store: WorkflowStateStore) -> None:
         store.mark_phase("review")
+        self._record_node_execution(store.state, "review", NodeStatus.RUNNING.value)
         diff_text = git_diff(self.context).stdout
         review_text = await self._role_run(RoleName.REVIEWER, self.reviewer, self._review_prompt(store.state, diff_text))
         findings = parse_review_findings(review_text)
@@ -556,21 +605,28 @@ class WorkflowEngine:
         release_notes = await self._role_run(RoleName.RELEASE_MANAGER, self.release_manager, self._release_prompt(store.state))
         store.set_release_notes(release_notes)
         self.artifact_manager.write_text(store.state.run_id, "release_notes.md", release_notes)
+        self._record_node_execution(store.state, "review", NodeStatus.COMPLETED.value, output_payload={"blocking": sum(1 for i in findings if i.blocking)})
         self._persist_state(store.state)
 
     async def _run_feature_or_bugfix(self, store: WorkflowStateStore, allow_commit: bool, enable_tester_mcp: bool) -> None:
         store.mark_phase("triage")
+        self._record_node_execution(store.state, "triage", NodeStatus.RUNNING.value)
         triage_output = await self._role_run(RoleName.TRIAGE, self.triage, f"Classify and sequence workflow for request: {store.state.original_request}")
         self.audit_logger.record("triage", {"output": triage_output[:500]})
+        self._record_node_execution(store.state, "triage", NodeStatus.COMPLETED.value)
 
         store.mark_phase("plan")
+        self._record_node_execution(store.state, "plan", NodeStatus.RUNNING.value)
         plan = await self._role_run(RoleName.PLANNER, self.planner, self._planner_prompt(store.state.original_request))
         store.set_plan(plan)
         self.artifact_manager.write_text(store.state.run_id, "plan.md", plan)
+        self._record_node_execution(store.state, "plan", NodeStatus.COMPLETED.value)
 
         store.mark_phase("architecture")
+        self._record_node_execution(store.state, "architecture", NodeStatus.RUNNING.value)
         architecture = await self._role_run(RoleName.ARCHITECT, self.architect, self._architect_prompt(store.state))
         self.artifact_manager.write_text(store.state.run_id, "architecture_review.md", architecture)
+        self._record_node_execution(store.state, "architecture", NodeStatus.COMPLETED.value)
 
         async with self._codex_context() as codex_server:
             self._apply_role_mcp_access(enable_tester_mcp, codex_server)
@@ -578,6 +634,7 @@ class WorkflowEngine:
             while True:
                 store.state.fix_iteration_count += 1
                 store.state.checkpoint(f"implementation_{store.state.fix_iteration_count}")
+                self._record_node_execution(store.state, "implementation", NodeStatus.RUNNING.value)
                 implementation = await self._role_run(RoleName.DEVELOPER, self.developer, self._developer_prompt(store.state))
                 self.artifact_manager.write_text(store.state.run_id, "implementation.md", implementation)
 
@@ -599,6 +656,7 @@ class WorkflowEngine:
                 validation = self._run_validation_commands(store.state)
                 self._record_validation(store, validation)
                 if should_rework_from_validation(validation):
+                    self._record_node_execution(store.state, "validation", NodeStatus.FAILED.value, failure_reason="validation_failed")
                     store.set_fix_iteration_reason("validation_failed")
                     if can_retry(store.state, self.max_fix_iterations):
                         continue
@@ -607,6 +665,7 @@ class WorkflowEngine:
                 review_text = await self._role_run(RoleName.REVIEWER, self.reviewer, self._review_prompt(store.state, git_diff(self.context).stdout))
                 findings = parse_review_findings(review_text)
                 self._record_review(store, findings)
+                self._record_node_execution(store.state, "review", NodeStatus.COMPLETED.value)
 
                 if sensitive.requires_security_review:
                     security_output = await self._role_run(
@@ -617,16 +676,19 @@ class WorkflowEngine:
                     security_findings = parse_review_findings(security_output)
                     self._record_security_review(store.state, security_findings)
                     if any(item.blocking for item in security_findings):
+                        self._record_node_execution(store.state, "security_review", NodeStatus.FAILED.value, failure_reason="security_review_blocked")
                         store.set_fix_iteration_reason("security_review_blocked")
                         if can_retry(store.state, self.max_fix_iterations):
                             continue
                         raise RuntimeError("security review has blocking findings")
 
                 if should_rework_from_review(findings):
+                    self._record_node_execution(store.state, "review", NodeStatus.FAILED.value, failure_reason="review_blocked")
                     store.set_fix_iteration_reason("review_blocked")
                     if can_retry(store.state, self.max_fix_iterations):
                         continue
                     raise RuntimeError("review has blocking findings")
+                self._record_node_execution(store.state, "implementation", NodeStatus.COMPLETED.value)
                 break
 
         validation_summary = f"lint={store.state.lint_result.exit_code if store.state.lint_result else 'n/a'}, tests={store.state.test_result.exit_code if store.state.test_result else 'n/a'}"
@@ -832,6 +894,59 @@ class WorkflowEngine:
     def _persist_state(self, state: WorkflowState) -> None:
         StatePersistence(run_dir=state.artifacts_path).save(state)
         self.artifact_manager.write_json(state.run_id, "state.json", state.to_dict())
+        self.artifact_manager.write_json(state.run_id, "execution_history.json", {"history": state.execution_history})
+        self._persist_graph_view(state)
+
+    def _persist_graph_view(self, state: WorkflowState) -> None:
+        definition = build_workflow_definition(state.workflow_kind)
+        node_history = self._node_history(state)
+        view = build_execution_view(definition=definition, state=state, node_history=node_history)
+        self.artifact_manager.write_json(state.run_id, "graph_view.json", view)
+
+    def _record_node_execution(
+        self,
+        state: WorkflowState,
+        node_id: str,
+        status: str,
+        input_payload: dict[str, Any] | None = None,
+        output_payload: dict[str, Any] | None = None,
+        failure_reason: str | None = None,
+    ) -> None:
+        state.current_node_id = node_id
+        state.execution_history.append(
+            {
+                "node_id": node_id,
+                "status": status,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "input_payload": input_payload or {},
+                "output_payload": output_payload or {},
+                "failure_reason": failure_reason,
+            }
+        )
+
+    def _node_history(self, state: WorkflowState) -> list[NodeExecutionState]:
+        last: dict[str, dict[str, Any]] = {}
+        for item in state.execution_history:
+            node_id = str(item.get("node_id", ""))
+            if node_id:
+                last[node_id] = item
+        output: list[NodeExecutionState] = []
+        for node_id, item in last.items():
+            status = item.get("status", NodeStatus.WAITING.value)
+            try:
+                enum_status = NodeStatus(status)
+            except ValueError:
+                enum_status = NodeStatus.WAITING
+            output.append(
+                NodeExecutionState(
+                    node_id=node_id,
+                    status=enum_status,
+                    input_payload=item.get("input_payload", {}),
+                    output_payload=item.get("output_payload", {}),
+                    failure_reason=item.get("failure_reason"),
+                )
+            )
+        return output
 
     async def _role_run(self, role: RoleName, agent: Any, prompt: str) -> str:
         action = self._role_action(role)

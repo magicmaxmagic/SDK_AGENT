@@ -1,6 +1,6 @@
 # sdk_agent
 
-sdk_agent is a policy-driven autonomous engineering platform for software delivery workflows.
+sdk_agent is a policy-driven autonomous engineering control plane for software delivery workflows.
 
 It combines deterministic platform controls with OpenAI Agents SDK and Codex MCP to support:
 - planning and architecture reviews
@@ -8,6 +8,7 @@ It combines deterministic platform controls with OpenAI Agents SDK and Codex MCP
 - structured review and security review
 - release preparation and deployment planning
 - resumable long-running runs with audit trails
+- graph-based workflow introspection for visual runtime UIs
 
 ## Core Principles
 
@@ -18,7 +19,9 @@ It combines deterministic platform controls with OpenAI Agents SDK and Codex MCP
 
 ## Architecture
 
-- `src/sdk_agent/core/`: workflow engine, policy engine, persistence, audit, sensitivity, git workflow, transitions.
+- `src/sdk_agent/core/`: workflow engine, runtime controls, policy engine, persistence, audit, sensitivity, git workflow, transitions.
+- `src/sdk_agent/graph/`: typed workflow graph model, definitions, layout metadata, serializers, execution view projection.
+- `src/sdk_agent/api/`: payload schemas/builders for graph and run inspection endpoints.
 - `src/sdk_agent/roles/`: triage, planner, architect, developer, tester, reviewer, security reviewer, release manager, deployer, policy enforcer.
 - `src/sdk_agent/tools/`: deterministic shell/git/file/validation/artifact/policy/persistence tooling.
 - `src/sdk_agent/plugins/`: project-specific trust profile, commands, rules, and restrictions.
@@ -84,6 +87,9 @@ Commands support resume/status/audit and deploy actions based on run id.
 
 Per run outputs under `.sdk_agent_runs/<run_id>/` include:
 - `state.json`
+- `definition.json`
+- `execution_history.json`
+- `graph_view.json`
 - `audit_log.jsonl`
 - `plan.md`
 - `changed_files.json`
@@ -106,6 +112,8 @@ Main operational commands:
 - `review`
 - `resume --run-id <id>`
 - `status --run-id <id>`
+- `inspect-graph --run-id <id>`
+- `inspect-run --run-id <id>`
 - `deploy-staging --run-id <id>`
 - `deploy-production --run-id <id>`
 - `approve-staging --run-id <id> --approved-by <user> --ticket <id> --ticket-source <src> --reason <text> [--expires-in-minutes <n>]`
@@ -160,6 +168,18 @@ Check status:
 
 ~~~bash
 uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio status --run-id run-abc123
+~~~
+
+Inspect workflow graph definition (for UI rendering):
+
+~~~bash
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio inspect-graph --run-id run-abc123
+~~~
+
+Inspect run state + graph + execution history (for runtime dashboards):
+
+~~~bash
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio inspect-run --run-id run-abc123
 ~~~
 
 Prepare staging deployment for a run:
@@ -291,11 +311,73 @@ Or with uv:
 uv add "git+https://github.com/magicmaxmagic/SDK_AGENT.git"
 ~~~
 
+## Frontend + Backend Authentifie (Vercel + Supabase)
+
+Un frontend/backend web est disponible dans `apps/web` (Next.js App Router).
+
+Fonctionnalites incluses:
+- frontend public + page de connexion (`/login`)
+- dashboard protege (`/dashboard`)
+- route backend privee (`/api/private`) qui exige une session Supabase
+- middleware de protection pour les routes privees
+
+### Variables d'environnement
+
+Copie `apps/web/.env.example` vers `apps/web/.env.local` puis configure:
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+
+### Lancer en local
+
+~~~bash
+cd apps/web
+npm install
+npm run dev
+~~~
+
+### Deployer sur Vercel
+
+1. Importer le repo dans Vercel.
+2. Configurer `apps/web` comme Root Directory du projet Vercel.
+3. Ajouter les variables d'environnement Vercel:
+	- `NEXT_PUBLIC_SUPABASE_URL`
+	- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+4. Deploy.
+
+Une fois deploye:
+- `/login` gere l'auth utilisateur via Supabase
+- `/dashboard` et `/api/private` sont accessibles uniquement avec session valide
+
+## Automatisation CI/CD + GitHub Copilot
+
+Le repo inclut un workflow GitHub Actions unique:
+- `.github/workflows/ci-cd.yml`
+
+Ce pipeline execute automatiquement:
+- tests Python (`uv sync --extra dev` puis `uv run pytest -q`)
+- qualite Web (`npm ci`, `npm run lint`, `npm run build` dans `apps/web`)
+- deploiement preview Vercel sur pull requests (URL automatique dans le Job Summary)
+- deploiement production Vercel sur push `main` si les checks passent
+
+Secrets GitHub a configurer pour le deploy Vercel:
+- `VERCEL_TOKEN`
+- `VERCEL_ORG_ID`
+- `VERCEL_PROJECT_ID`
+
+Configuration Copilot partagee:
+- `.github/copilot-instructions.md`
+
+Pour activer l'automatisation Copilot sur pull requests:
+1. Ouvrir GitHub repository settings.
+2. Activer GitHub Copilot code review pour le repository.
+3. Utiliser ces instructions repo pour guider les suggestions et corrections automatiques.
+
 ## Current Limits
 
 - Production deployment remains policy-disabled by default for safety.
 - Worktree/container execution hooks are extensible but not full container orchestration yet.
 - Security review parser is structured but heuristic in current version.
+- Visual editor/front-end is intentionally decoupled; this repo currently provides the control-plane backend and inspectable artifacts/APIs.
 
 ## Safe Path to Higher Autonomy
 

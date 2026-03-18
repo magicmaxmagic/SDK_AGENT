@@ -59,6 +59,12 @@ def _base_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status")
     status.add_argument("--run-id", required=True)
 
+    inspect_graph = sub.add_parser("inspect-graph")
+    inspect_graph.add_argument("--run-id", required=True)
+
+    inspect_run = sub.add_parser("inspect-run")
+    inspect_run.add_argument("--run-id", required=True)
+
     dep_staging = sub.add_parser("deploy-staging")
     dep_staging.add_argument("--run-id", required=True)
 
@@ -166,6 +172,16 @@ async def _run_async(args: argparse.Namespace) -> int:
     if args.command == "status":
         state = team.workflow.status(run_id=args.run_id)
         print(json.dumps(state.to_dict(), indent=2, default=str))
+        return 0
+
+    if args.command == "inspect-graph":
+        payload = team.workflow.inspect_graph(run_id=args.run_id)
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+
+    if args.command == "inspect-run":
+        payload = team.workflow.inspect_run(run_id=args.run_id)
+        print(json.dumps(payload, indent=2, default=str))
         return 0
 
     if args.command == "deploy-staging":

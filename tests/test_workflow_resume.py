@@ -62,3 +62,16 @@ def test_resume_run(tmp_path: Path) -> None:
     resumed = engine.resume(run_id=state.run_id)
     assert resumed.run_id == state.run_id
     assert "resumed" in resumed.events
+
+
+def test_inspect_graph_and_run(tmp_path: Path) -> None:
+    engine = _engine(tmp_path)
+    state = asyncio.run(engine.run(flow=FlowType.PLAN, request="Plan work"))
+
+    graph = engine.inspect_graph(run_id=state.run_id)
+    run_payload = engine.inspect_run(run_id=state.run_id)
+
+    assert graph["workflow_id"] == "flow-plan"
+    assert run_payload["run_id"] == state.run_id
+    assert "execution_history" in run_payload
+    assert "graph" in run_payload

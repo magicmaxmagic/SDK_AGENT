@@ -37,6 +37,20 @@ def test_cli_deploy_production_parsing() -> None:
     assert args.command == "deploy-production"
 
 
+def test_cli_inspect_graph_parsing() -> None:
+    parser = _base_parser()
+    args = parser.parse_args(["inspect-graph", "--run-id", "run-1"])
+    assert args.command == "inspect-graph"
+    assert args.run_id == "run-1"
+
+
+def test_cli_inspect_run_parsing() -> None:
+    parser = _base_parser()
+    args = parser.parse_args(["inspect-run", "--run-id", "run-2"])
+    assert args.command == "inspect-run"
+    assert args.run_id == "run-2"
+
+
 def test_cli_approve_production_parsing() -> None:
     parser = _base_parser()
     args = parser.parse_args(

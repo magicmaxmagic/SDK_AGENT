@@ -13,6 +13,7 @@ class WorkflowStateStore:
 
     def mark_phase(self, phase: str) -> None:
         self.state.current_phase = phase
+        self.state.current_node_id = phase
         self.state.add_event(f"phase:{phase}")
 
     def set_plan(self, plan: str) -> None:

@@ -4,6 +4,8 @@ import json
 from typing import Any
 from urllib.error import URLError
 
+import pytest
+
 from sdk_agent.core import ticket_connectors as connectors
 
 
@@ -20,6 +22,14 @@ class _FakeResponse:
 
     def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
         return None
+
+
+@pytest.fixture(autouse=True)
+def _isolated_circuit_breaker_state(monkeypatch, tmp_path):
+    connectors._CIRCUIT_BREAKERS.clear()
+    monkeypatch.setenv("SDK_AGENT_CIRCUIT_STATE_FILE", str(tmp_path / "circuit_state.json"))
+    yield
+    connectors._CIRCUIT_BREAKERS.clear()
 
 
 def test_jira_http_connector_validates(monkeypatch) -> None:
