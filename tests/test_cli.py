@@ -11,6 +11,9 @@ def test_cli_feature_parsing() -> None:
         "--branch-name",
         "feature/add-signup",
         "--allow-commit",
+        "--allow-staging-deploy",
+        "--autonomy-level",
+        "implement",
         "feature",
         "Add signup form",
     ])
@@ -21,14 +24,14 @@ def test_cli_feature_parsing() -> None:
     assert args.allow_commit is True
 
 
-def test_cli_validate_parsing() -> None:
+def test_cli_resume_parsing() -> None:
     parser = _base_parser()
-    args = parser.parse_args(["validate"])
-    assert args.command == "validate"
+    args = parser.parse_args(["resume", "--run-id", "run-abc"])
+    assert args.command == "resume"
+    assert args.run_id == "run-abc"
 
 
-def test_cli_dry_run_flag() -> None:
+def test_cli_deploy_production_parsing() -> None:
     parser = _base_parser()
-    args = parser.parse_args(["--dry-run", "review"])
-    assert args.command == "review"
-    assert args.dry_run is True
+    args = parser.parse_args(["deploy-production", "--run-id", "run-1"])
+    assert args.command == "deploy-production"

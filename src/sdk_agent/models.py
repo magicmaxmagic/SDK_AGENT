@@ -18,8 +18,10 @@ class FlowType(str, Enum):
 
 class WorkflowStatus(str, Enum):
     RUNNING = "running"
+    BLOCKED = "blocked"
     FAILED = "failed"
     COMPLETED = "completed"
+    ROLLBACK_REQUIRED = "rollback_required"
 
 
 class Severity(str, Enum):
@@ -27,6 +29,64 @@ class Severity(str, Enum):
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
+
+
+class RoleName(str, Enum):
+    TRIAGE = "triage"
+    PLANNER = "planner"
+    ARCHITECT = "architect"
+    DEVELOPER = "developer"
+    TESTER = "tester"
+    REVIEWER = "reviewer"
+    SECURITY_REVIEWER = "security_reviewer"
+    RELEASE_MANAGER = "release_manager"
+    DEPLOYER = "deployer"
+    POLICY_ENFORCER = "policy_enforcer"
+
+
+class AutonomyLevel(str, Enum):
+    OBSERVE = "observe"
+    SUGGEST = "suggest"
+    IMPLEMENT = "implement"
+    VALIDATE = "validate"
+    STAGING_DEPLOY = "staging_deploy"
+    PRODUCTION_CANDIDATE = "production_candidate"
+    FULLY_AUTONOMOUS = "fully_autonomous"
+
+
+class TrustProfile(str, Enum):
+    LOW_RISK_SANDBOX = "low_risk_sandbox"
+    NORMAL_INTERNAL = "normal_internal"
+    SENSITIVE = "sensitive"
+    CRITICAL = "critical"
+
+
+class EnvironmentType(str, Enum):
+    LOCAL = "local"
+    CI = "ci"
+    STAGING = "staging"
+    PRODUCTION = "production"
+
+
+class DeploymentTarget(str, Enum):
+    NONE = "none"
+    STAGING = "staging"
+    PRODUCTION = "production"
+
+
+class ActionType(str, Enum):
+    EDIT_FILE = "edit_file"
+    CREATE_BRANCH = "create_branch"
+    CREATE_WORKTREE = "create_worktree"
+    RUN_SHELL = "run_shell"
+    RUN_MIGRATIONS = "run_migrations"
+    CHANGE_CICD = "change_cicd"
+    TOUCH_SECRETS = "touch_secrets"
+    DEPLOY_STAGING = "deploy_staging"
+    DEPLOY_PRODUCTION = "deploy_production"
+    COMMIT = "commit"
+    PUSH = "push"
+    CREATE_PR_DRAFT = "create_pr_draft"
 
 
 @dataclass(slots=True)
@@ -63,6 +123,22 @@ class ReviewRecord:
 
 
 @dataclass(slots=True)
+class PolicyDecision:
+    allowed: bool
+    reason: str
+    action: ActionType
+    role: RoleName
+
+
+@dataclass(slots=True)
+class SensitiveChangeReport:
+    files: list[str]
+    sensitive_files: list[str]
+    categories: list[str]
+    requires_security_review: bool
+
+
+@dataclass(slots=True)
 class ValidationSummary:
     lint: CommandResult | None = None
     tests: CommandResult | None = None
@@ -76,10 +152,14 @@ class ValidationSummary:
 
 @dataclass(slots=True)
 class WorkflowState:
-    task_id: str
+    run_id: str
     workflow_kind: FlowType
+    autonomy_level: AutonomyLevel
+    trust_profile: TrustProfile
     branch_name: str | None
+    worktree_path: str | None
     original_request: str
+    current_phase: str
     artifacts_path: Path
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     implementation_plan: str | None = None
@@ -92,11 +172,15 @@ class WorkflowState:
     review_history: list[ReviewRecord] = field(default_factory=list)
     release_notes: str | None = None
     deploy_plan: str | None = None
+    rollback_plan: str | None = None
     fix_iteration_count: int = 0
     fix_iteration_reason: str | None = None
     final_status: WorkflowStatus = WorkflowStatus.RUNNING
     final_decision: str | None = None
     human_approval_required: bool = True
+    pending_actions: list[str] = field(default_factory=list)
+    tool_results: list[dict[str, Any]] = field(default_factory=list)
+    policy_decisions: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     events: list[str] = field(default_factory=list)
 
@@ -106,13 +190,20 @@ class WorkflowState:
         flow: FlowType,
         request: str,
         artifacts_path: Path,
+        autonomy_level: AutonomyLevel,
+        trust_profile: TrustProfile,
         branch_name: str | None = None,
+        worktree_path: str | None = None,
     ) -> "WorkflowState":
         return cls(
-            task_id=f"run-{uuid4().hex[:10]}",
+            run_id=f"run-{uuid4().hex[:12]}",
             workflow_kind=flow,
+            autonomy_level=autonomy_level,
+            trust_profile=trust_profile,
             branch_name=branch_name,
+            worktree_path=worktree_path,
             original_request=request,
+            current_phase="init",
             artifacts_path=artifacts_path,
         )
 
@@ -122,9 +213,33 @@ class WorkflowState:
     def add_error(self, error: str) -> None:
         self.errors.append(error)
 
+    def add_policy_decision(self, decision: PolicyDecision) -> None:
+        self.policy_decisions.append(
+            {
+                "allowed": decision.allowed,
+                "reason": decision.reason,
+                "action": decision.action.value,
+                "role": decision.role.value,
+            }
+        )
+
+    def checkpoint(self, phase: str) -> None:
+        self.current_phase = phase
+        self.add_event(f"checkpoint:{phase}")
+
     def fail(self, reason: str) -> None:
         self.final_status = WorkflowStatus.FAILED
         self.final_decision = "failed"
+        self.add_error(reason)
+
+    def block(self, reason: str) -> None:
+        self.final_status = WorkflowStatus.BLOCKED
+        self.final_decision = "blocked"
+        self.add_error(reason)
+
+    def rollback_required(self, reason: str) -> None:
+        self.final_status = WorkflowStatus.ROLLBACK_REQUIRED
+        self.final_decision = "rollback_required"
         self.add_error(reason)
 
     def complete(self) -> None:
@@ -135,6 +250,8 @@ class WorkflowState:
         payload = asdict(self)
         payload["started_at"] = self.started_at.isoformat()
         payload["workflow_kind"] = self.workflow_kind.value
+        payload["autonomy_level"] = self.autonomy_level.value
+        payload["trust_profile"] = self.trust_profile.value
         payload["final_status"] = self.final_status.value
         payload["artifacts_path"] = str(self.artifacts_path)
         payload["validation_history"] = [

@@ -1,273 +1,205 @@
 # sdk_agent
 
-Reusable software engineering agent platform for planning, implementation, validation, review, release preparation, and staging deployment planning.
+sdk_agent is a policy-driven autonomous engineering platform for software delivery workflows.
 
-The package is designed to be installed once and reused across multiple repositories.
+It combines deterministic platform controls with OpenAI Agents SDK and Codex MCP to support:
+- planning and architecture reviews
+- controlled implementation and validation
+- structured review and security review
+- release preparation and deployment planning
+- resumable long-running runs with audit trails
 
-## What It Does
+## Core Principles
 
-- Runs role-specialized software agents with shared workflow state.
-- Uses deterministic Python tools for shell, git, files, validation, and artifacts.
-- Integrates Codex CLI through MCP stdio for coding assistance.
-- Applies practical guardrails by default.
-- Produces per-run artifacts under `.sdk_agent_runs/<task_id>/`.
+- Safety first: controls are code-enforced.
+- Zero trust by default: actions are policy-evaluated.
+- Reproducible execution: state, logs, artifacts, and decisions are persisted.
+- Staged autonomy: trust levels constrain what autonomy can do.
 
-## Architecture Overview
+## Architecture
 
-The package is split into layers:
+- `src/sdk_agent/core/`: workflow engine, policy engine, persistence, audit, sensitivity, git workflow, transitions.
+- `src/sdk_agent/roles/`: triage, planner, architect, developer, tester, reviewer, security reviewer, release manager, deployer, policy enforcer.
+- `src/sdk_agent/tools/`: deterministic shell/git/file/validation/artifact/policy/persistence tooling.
+- `src/sdk_agent/plugins/`: project-specific trust profile, commands, rules, and restrictions.
+- `src/sdk_agent/cli.py`: operational CLI commands.
 
-1. Core platform layer
-- workflow engine with conditional transitions
-- workflow state model
-- artifact manager
-- transition helpers
-- agent factory
+## Autonomy Levels
 
-2. Role layer
-- Planner
-- Developer
-- Tester
-- Reviewer
-- ReleaseManager
-- Deployer
-- Triage
+Supported typed autonomy levels:
+- `observe`
+- `suggest`
+- `implement`
+- `validate`
+- `staging_deploy`
+- `production_candidate`
+- `fully_autonomous`
 
-3. Tool layer
-- safe file listing/reading
-- guarded shell execution
-- git status/diff/branch/changed files
-- lint/test command wrappers
-- artifact writing helpers
+Higher levels are gated by trust profile policy.
 
-4. Plugin layer
-- GenericProjectPlugin
-- NextJsPlugin
-- PythonAppPlugin
+## Trust Profiles
 
-5. CLI layer
+- `low_risk_sandbox`
+- `normal_internal`
+- `sensitive`
+- `critical`
+
+Trust profiles define max autonomy, write/commit/pr permissions, deploy permissions, and human approval requirements.
+
+## Policy Engine
+
+Central policy checks evaluate each critical action against:
+- role
+- autonomy level
+- trust profile
+- environment
+- action type
+- target branch/path
+
+Examples of gated actions:
+- file edits
+- branch/worktree creation
+- shell execution
+- deploy staging/production
+- commit and PR draft preparation
+- protected path modifications
+
+## Execution Isolation
+
+The platform supports isolation through:
+- run-specific branch creation
+- optional git worktree creation per run
+- per-run artifact directory
+
+No automated push is performed.
+
+## Resumable Runs
+
+Every run persists state in:
+- `.sdk_agent_runs/<run_id>/state.json`
+
+Commands support resume/status/audit and deploy actions based on run id.
+
+## Artifacts and Audit
+
+Per run outputs under `.sdk_agent_runs/<run_id>/` include:
+- `state.json`
+- `audit_log.jsonl`
+- `plan.md`
+- `changed_files.json`
+- `lint_report.json`
+- `test_report.json`
+- `review_report.json`
+- `security_review.json`
+- `release_notes.md`
+- `deploy_plan.md`
+- `rollback_plan.md`
+- `final_summary.json`
+
+## CLI Commands
+
+Main operational commands:
 - `feature`
 - `bugfix`
 - `plan`
 - `validate`
 - `review`
+- `resume --run-id <id>`
+- `status --run-id <id>`
+- `deploy-staging --run-id <id>`
+- `deploy-production --run-id <id>`
+- `audit --run-id <id>`
 
-## Repository Structure
-
-- src/sdk_agent
-- src/sdk_agent/core
-- src/sdk_agent/roles
-- src/sdk_agent/tools
-- src/sdk_agent/plugins
-- tests
-
-## Install Locally
-
-Requirements:
-- Python 3.11+
-- Codex CLI installed and authenticated
-
-Using uv:
-
-~~~bash
-cd /home/maxence/Documents/SDK_AGENT
-uv sync --extra dev
-~~~
-
-## Install From GitHub
-
-~~~bash
-pip install "git+https://github.com/magicmaxmagic/SDK_AGENT.git"
-~~~
-
-Or with uv in another repository:
-
-~~~bash
-uv add "git+https://github.com/magicmaxmagic/SDK_AGENT.git"
-~~~
-
-## Codex Authentication
-
-Install Codex CLI and authenticate in your shell environment.
-
-Typical local check:
-
-~~~bash
-codex --help
-codex mcp-server --help
-~~~
-
-If you use OpenAI Agents SDK with OpenAI endpoint:
-
-~~~bash
-export OPENAI_API_KEY="YOUR_KEY"
-~~~
-
-## CLI Usage
-
-Main entrypoint:
-
-~~~bash
-uv run python -m sdk_agent.main <command> [options]
-~~~
-
-Commands:
-- feature <request>
-- bugfix <request>
-- plan <request>
-- validate
-- review
-
-Common options:
+Key options:
 - `--repo-path`
 - `--project-name`
-- `--plugin` (`generic`, `nextjs`, `python`)
+- `--plugin`
 - `--model`
 - `--artifacts-dir`
-- `--max-fix-iterations`
+- `--autonomy-level`
+- `--trust-profile`
 - `--branch-name`
+- `--use-worktree`
 - `--allow-commit`
+- `--allow-pr-draft`
 - `--allow-staging-deploy`
-- `--enable-tester-mcp`
+- `--allow-production-deploy`
 - `--dry-run`
 
-## Example Commands
+## Usage Examples (uv)
 
-Feature flow on Next.js repo:
-
-~~~bash
-uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --project-name portfolio --plugin nextjs --model gpt-5-codex feature "Add newsletter signup form"
-~~~
-
-Bugfix flow on Python repo:
+Run feature flow:
 
 ~~~bash
-uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/api --project-name api --plugin python bugfix "Fix login redirect bug"
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs --autonomy-level implement feature "Add team management page"
 ~~~
 
-Validation-only flow:
+Run validate flow:
 
 ~~~bash
 uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs validate
 ~~~
 
-Review-only flow:
+Resume a run:
 
 ~~~bash
-uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs review
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio resume --run-id run-abc123
 ~~~
 
-Plan-only flow:
+Check status:
 
 ~~~bash
-uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs plan "Build admin dashboard"
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio status --run-id run-abc123
 ~~~
 
-Feature flow with git branch draft and optional commit preparation:
+Prepare staging deployment for a run:
 
 ~~~bash
-uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs --branch-name feature/signup --allow-commit feature "Add signup form"
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio deploy-staging --run-id run-abc123
 ~~~
 
-Dry-run full simulation (no shell commands executed):
+Read audit trail:
 
 ~~~bash
-uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --plugin nextjs --dry-run feature "Add signup form"
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio audit --run-id run-abc123
 ~~~
 
-## Role Responsibilities
-
-Planner:
-- creates implementation plan
-- defines acceptance criteria and risks
-- does not implement code
-
-Developer:
-- performs implementation with Codex MCP support
-- keeps changes minimal and scoped
-- does not deploy
-
-Tester:
-- runs lint and tests via deterministic commands
-- reports failures for fix/retest loop
-
-Reviewer:
-- inspects diffs and changed files
-- reports structured findings (`title`, `severity`, `file_path`, `recommendation`, `blocking`)
-- read-only reviewer behavior
-
-ReleaseManager:
-- creates release notes
-- builds validation and rollback summary
-
-Deployer:
-- generates staging deployment plan only
-- never auto deploys production
-
-Triage:
-- classifies request flow
-- supports orchestration decisions
-
-## Plugins
-
-Each plugin encapsulates project-specific behavior:
-
-- repo path
-- allowed shell command prefixes
-- lint command
-- test command
-- optional build command
-- staging deploy command
-- project rules
-- artifact root path
-
-Built-in plugins:
-- GenericProjectPlugin: mixed repositories
-- NextJsPlugin: Node/Next.js conventions
-- PythonAppPlugin: Python service conventions
-
-## Artifacts
-
-Every run writes outputs under:
-
-- `.sdk_agent_runs/<task_id>/plan.md`
-- `.sdk_agent_runs/<task_id>/changed_files.json`
-- `.sdk_agent_runs/<task_id>/lint_report.json`
-- `.sdk_agent_runs/<task_id>/test_report.json`
-- `.sdk_agent_runs/<task_id>/review_report.json`
-- `.sdk_agent_runs/<task_id>/release_notes.md`
-- `.sdk_agent_runs/<task_id>/deploy_plan.md`
-- `.sdk_agent_runs/<task_id>/commit_message.txt`
-- `.sdk_agent_runs/<task_id>/pr_draft.md`
-- `.sdk_agent_runs/<task_id>/final_summary.json`
-
-## Guardrails
-
-Enforced defaults include:
-- repository sandbox path checks
-- shell command allowlist per plugin
-- rejection of destructive commands
-- role-aware command restrictions
-- no automatic production deploy
-- no git push from workflow
-- artifact path sandboxing
-
-## Local Development and Tests
+Dry-run simulation:
 
 ~~~bash
-cd /home/maxence/Documents/SDK_AGENT
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio --dry-run feature "Refactor auth middleware"
+~~~
+
+## Installation
+
+Local development:
+
+~~~bash
 uv sync --extra dev
 uv run pytest -q
 ~~~
 
-## Current Limitations
+Install from GitHub:
 
-- Reviewer finding parsing is text-based and intentionally simple in V1.
-- Workflow currently loops with bounded retries instead of adaptive dynamic planning.
-- MCP tool access is focused on Developer and Tester flows.
+~~~bash
+pip install "git+https://github.com/magicmaxmagic/SDK_AGENT.git"
+~~~
 
-## Future Improvements
+Or with uv:
 
-- Structured finding schema extraction from reviewer output.
-- Richer branch policies and optional PR creation integration.
-- Built-in metrics exporters and trace backends.
-- Additional plugins for FastAPI, Django, and Streamlit templates.
+~~~bash
+uv add "git+https://github.com/magicmaxmagic/SDK_AGENT.git"
+~~~
+
+## Current Limits
+
+- Production deployment remains policy-disabled by default for safety.
+- Worktree/container execution hooks are extensible but not full container orchestration yet.
+- Security review parser is structured but heuristic in current version.
+
+## Safe Path to Higher Autonomy
+
+1. Start with `suggest` or `implement` on low-risk repositories.
+2. Validate audit and artifact quality.
+3. Enable staging deploy only after stable validation/review quality.
+4. Keep production deploy denied unless explicit trust profile and policy approval are in place.

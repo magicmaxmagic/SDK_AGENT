@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from sdk_agent.models import AutonomyLevel, TrustProfile
 from sdk_agent.plugins.base import BaseProjectPlugin
 
 
 class NextJsPlugin(BaseProjectPlugin):
+    def trust_profile(self) -> TrustProfile:
+        return TrustProfile.NORMAL_INTERNAL
+
+    def autonomy_level(self) -> AutonomyLevel:
+        return AutonomyLevel.STAGING_DEPLOY
+
     def role_capability_overrides(self) -> dict[str, dict[str, bool]]:
         return {"tester": {"mcp": False}}
 
@@ -13,6 +20,7 @@ class NextJsPlugin(BaseProjectPlugin):
             "git diff",
             "git rev-parse",
             "git checkout -b",
+            "git worktree add",
             "npm test",
             "npm run lint",
             "npm run build",

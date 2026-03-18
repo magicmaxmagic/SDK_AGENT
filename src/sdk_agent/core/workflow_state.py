@@ -7,11 +7,12 @@ from sdk_agent.models import WorkflowState
 
 @dataclass(slots=True)
 class WorkflowStateStore:
-    """Small state wrapper to keep state mutations explicit and testable."""
+    """Explicit mutation wrapper for workflow state transitions."""
 
     state: WorkflowState
 
     def mark_phase(self, phase: str) -> None:
+        self.state.current_phase = phase
         self.state.add_event(f"phase:{phase}")
 
     def set_plan(self, plan: str) -> None:

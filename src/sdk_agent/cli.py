@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 
 from sdk_agent.logging_config import configure_logging
-from sdk_agent.models import FlowType
-from sdk_agent.plugins import GenericProjectPlugin, NextJsPlugin, PythonAppPlugin
+from sdk_agent.models import AutonomyLevel, FlowType, TrustProfile
+from sdk_agent.plugins import CriticalRepoPlugin, GenericProjectPlugin, NextJsPlugin, PythonAppPlugin
 from sdk_agent.team import build_team
 
 
@@ -15,46 +15,65 @@ PLUGIN_REGISTRY = {
     "generic": GenericProjectPlugin,
     "nextjs": NextJsPlugin,
     "python": PythonAppPlugin,
+    "critical": CriticalRepoPlugin,
 }
 
 
 def _base_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="SDK Agent engineering workflow CLI")
-    parser.add_argument("--repo-path", default=".", help="Repository path to operate in")
+    parser = argparse.ArgumentParser(description="SDK Agent autonomous engineering CLI")
+    parser.add_argument("--repo-path", default=".")
     parser.add_argument("--project-name", default="project")
     parser.add_argument("--plugin", choices=sorted(PLUGIN_REGISTRY.keys()), default="generic")
     parser.add_argument("--model", default="gpt-5-codex")
     parser.add_argument("--artifacts-dir", default=".sdk_agent_runs")
-    parser.add_argument("--max-fix-iterations", type=int, default=2)
+    parser.add_argument("--autonomy-level", choices=[item.value for item in AutonomyLevel], default=None)
+    parser.add_argument("--trust-profile", choices=[item.value for item in TrustProfile], default=None)
     parser.add_argument("--branch-name", default=None)
+    parser.add_argument("--use-worktree", action="store_true")
     parser.add_argument("--allow-commit", action="store_true")
+    parser.add_argument("--allow-pr-draft", action="store_true")
     parser.add_argument("--allow-staging-deploy", action="store_true")
+    parser.add_argument("--allow-production-deploy", action="store_true")
     parser.add_argument("--enable-tester-mcp", action="store_true")
-    parser.add_argument("--dry-run", action="store_true", help="Simulate full workflow without executing shell commands")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--max-fix-iterations", type=int, default=2)
 
     sub = parser.add_subparsers(dest="command", required=True)
-
-    for cmd in ("feature", "bugfix", "plan"):
-        p = sub.add_parser(cmd)
-        p.add_argument("request")
+    for name in ("feature", "bugfix", "plan"):
+        cmd = sub.add_parser(name)
+        cmd.add_argument("request")
 
     sub.add_parser("validate")
     sub.add_parser("review")
+
+    resume = sub.add_parser("resume")
+    resume.add_argument("--run-id", required=True)
+
+    status = sub.add_parser("status")
+    status.add_argument("--run-id", required=True)
+
+    dep_staging = sub.add_parser("deploy-staging")
+    dep_staging.add_argument("--run-id", required=True)
+
+    dep_prod = sub.add_parser("deploy-production")
+    dep_prod.add_argument("--run-id", required=True)
+
+    audit = sub.add_parser("audit")
+    audit.add_argument("--run-id", required=True)
     return parser
 
 
 def _flow_from_command(command: str) -> FlowType:
-    mapping = {
+    return {
         "feature": FlowType.FEATURE,
         "bugfix": FlowType.BUGFIX,
         "plan": FlowType.PLAN,
         "validate": FlowType.VALIDATE,
         "review": FlowType.REVIEW,
-    }
-    return mapping[command]
+    }[command]
 
 
-async def _run_async(args: argparse.Namespace) -> int:
+def _build_plugin(args: argparse.Namespace):
     plugin_cls = PLUGIN_REGISTRY[args.plugin]
     plugin = plugin_cls(
         project_name=args.project_name,
@@ -62,24 +81,62 @@ async def _run_async(args: argparse.Namespace) -> int:
         artifact_root=Path(args.artifacts_dir),
     )
 
+    if args.autonomy_level is not None:
+        plugin.autonomy_level = lambda: AutonomyLevel(args.autonomy_level)
+    if args.trust_profile is not None:
+        plugin.trust_profile = lambda: TrustProfile(args.trust_profile)
+    return plugin
+
+
+async def _run_async(args: argparse.Namespace) -> int:
+    plugin = _build_plugin(args)
     team = build_team(plugin=plugin, model=args.model, max_fix_iterations=args.max_fix_iterations)
     team.workflow.context.dry_run = args.dry_run
 
-    request = getattr(args, "request", "") or f"{args.command} workflow"
-    state = await team.workflow.run(
-        flow=_flow_from_command(args.command),
-        request=request,
-        branch_name=args.branch_name,
-        allow_commit=args.allow_commit,
-        allow_staging_deploy=args.allow_staging_deploy,
-        enable_tester_mcp=args.enable_tester_mcp,
-    )
-    print(json.dumps(state.to_dict(), indent=2, default=str))
-    return 0
+    if args.command in {"feature", "bugfix", "plan", "validate", "review"}:
+        request = getattr(args, "request", "") or f"{args.command} workflow"
+        state = await team.workflow.run(
+            flow=_flow_from_command(args.command),
+            request=request,
+            branch_name=args.branch_name,
+            allow_commit=args.allow_commit,
+            allow_staging_deploy=args.allow_staging_deploy,
+            allow_production_deploy=args.allow_production_deploy,
+            enable_tester_mcp=args.enable_tester_mcp,
+            use_worktree=args.use_worktree,
+        )
+        print(json.dumps(state.to_dict(), indent=2, default=str))
+        return 0
+
+    if args.command == "resume":
+        state = team.workflow.resume(run_id=args.run_id)
+        print(json.dumps(state.to_dict(), indent=2, default=str))
+        return 0
+
+    if args.command == "status":
+        state = team.workflow.status(run_id=args.run_id)
+        print(json.dumps(state.to_dict(), indent=2, default=str))
+        return 0
+
+    if args.command == "deploy-staging":
+        state = await team.workflow.deploy_staging(run_id=args.run_id)
+        print(json.dumps(state.to_dict(), indent=2, default=str))
+        return 0
+
+    if args.command == "deploy-production":
+        state = await team.workflow.deploy_production(run_id=args.run_id)
+        print(json.dumps(state.to_dict(), indent=2, default=str))
+        return 0
+
+    if args.command == "audit":
+        payload = team.workflow.read_audit(run_id=args.run_id)
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+
+    raise ValueError(f"Unsupported command: {args.command}")
 
 
 def main() -> None:
     configure_logging()
-    parser = _base_parser()
-    args = parser.parse_args()
+    args = _base_parser().parse_args()
     raise SystemExit(asyncio.run(_run_async(args)))

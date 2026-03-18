@@ -1,17 +1,33 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from pathlib import Path
+from typing import Any, AsyncIterator
 
 from sdk_agent.context import ProjectContext
 from sdk_agent.core.artifacts import ArtifactManager
+from sdk_agent.core.audit import AuditLogger
 from sdk_agent.core.git_workflow import prepare_git_workflow
+from sdk_agent.core.persistence import StatePersistence
+from sdk_agent.core.policy_engine import PolicyEngine
+from sdk_agent.core.sensitivity import classify_sensitive_changes
 from sdk_agent.core.transitions import can_retry, should_rework_from_review, should_rework_from_validation
 from sdk_agent.core.workflow_state import WorkflowStateStore
 from sdk_agent.logging_config import get_logger
 from sdk_agent.mcp import codex_mcp_server
-from sdk_agent.models import FlowType, ReviewRecord, ValidationRecord, ValidationSummary, WorkflowState
+from sdk_agent.models import (
+    ActionType,
+    AutonomyLevel,
+    FlowType,
+    ReviewRecord,
+    RoleName,
+    ValidationRecord,
+    ValidationSummary,
+    WorkflowState,
+    WorkflowStatus,
+)
 from sdk_agent.plugins.base import BaseProjectPlugin
 from sdk_agent.roles.reviewer import parse_review_findings
 from sdk_agent.tools.git_tools import git_collect_changed_files, git_diff
@@ -19,17 +35,6 @@ from sdk_agent.tools.shell_tools import safe_run_command
 from sdk_agent.tools.validation_tools import run_lint, run_tests
 
 LOGGER = get_logger("workflow")
-
-
-ROLE_CAPABILITIES: dict[str, dict[str, bool]] = {
-    "planner": {"mcp": False, "shell": False, "write": False},
-    "developer": {"mcp": True, "shell": True, "write": True},
-    "tester": {"mcp": False, "shell": True, "write": False},
-    "reviewer": {"mcp": False, "shell": False, "write": False},
-    "release_manager": {"mcp": False, "shell": False, "write": False},
-    "deployer": {"mcp": False, "shell": False, "write": False},
-    "triage": {"mcp": False, "shell": False, "write": False},
-}
 
 
 class AgentsRunnerAdapter:
@@ -45,13 +50,18 @@ class WorkflowEngine:
     context: ProjectContext
     plugin: BaseProjectPlugin
     artifact_manager: ArtifactManager
+    audit_logger: AuditLogger
+    policy_engine: PolicyEngine
+    triage: Any
     planner: Any
+    architect: Any
     developer: Any
     tester: Any
     reviewer: Any
+    security_reviewer: Any
     release_manager: Any
     deployer: Any
-    triage: Any
+    policy_enforcer: Any
     max_fix_iterations: int = 2
     runner: AgentsRunnerAdapter = field(default_factory=AgentsRunnerAdapter)
 
@@ -62,131 +72,221 @@ class WorkflowEngine:
         branch_name: str | None = None,
         allow_commit: bool = False,
         allow_staging_deploy: bool = False,
+        allow_production_deploy: bool = False,
         enable_tester_mcp: bool = False,
+        use_worktree: bool = False,
+        run_id: str | None = None,
     ) -> WorkflowState:
+        if run_id:
+            return self.resume(run_id=run_id)
+
         self.context.allow_staging_deploy = allow_staging_deploy
+        self.context.allow_production_deploy = allow_production_deploy
+        self.context.use_worktree = use_worktree
+
         state = WorkflowState.create(
             flow=flow,
             request=request,
             artifacts_path=self.context.resolved_artifact_root(),
+            autonomy_level=self.context.autonomy_level,
+            trust_profile=self.context.trust_profile,
             branch_name=branch_name,
         )
-        state.artifacts_path = self.artifact_manager.run_dir(state.task_id)
+        state.artifacts_path = self.artifact_manager.run_dir(state.run_id)
+        self.audit_logger = AuditLogger(run_dir=state.artifacts_path)
+        persistence = StatePersistence(run_dir=state.artifacts_path)
         store = WorkflowStateStore(state)
 
-        LOGGER.info(
-            "workflow_started",
-            extra={"extra_fields": {"task_id": state.task_id, "flow": flow.value, "branch": branch_name}},
-        )
+        self.audit_logger.record("workflow_started", {"run_id": state.run_id, "flow": flow.value})
+        persistence.save(state)
 
         try:
             if flow in {FlowType.FEATURE, FlowType.BUGFIX}:
-                await self._run_feature_or_bugfix(
-                    store=store,
-                    allow_commit=allow_commit,
-                    allow_staging_deploy=allow_staging_deploy,
-                    enable_tester_mcp=enable_tester_mcp,
-                )
-            elif flow == FlowType.VALIDATE:
-                await self._run_validate_only(store)
-            elif flow == FlowType.REVIEW:
-                await self._run_review_only(store)
+                await self._run_feature_or_bugfix(store, allow_commit=allow_commit, enable_tester_mcp=enable_tester_mcp)
             elif flow == FlowType.PLAN:
-                await self._run_plan_only(store)
+                await self._run_plan(store)
+            elif flow == FlowType.VALIDATE:
+                await self._run_validate(store)
+            elif flow == FlowType.REVIEW:
+                await self._run_review(store)
             else:
                 raise ValueError(f"Unsupported flow: {flow}")
+
             state.complete()
+        except PermissionError as exc:
+            state.block(str(exc))
         except Exception as exc:
             state.fail(str(exc))
-            LOGGER.exception("workflow_failed", extra={"extra_fields": {"task_id": state.task_id}})
+            LOGGER.exception("workflow_failed", extra={"extra_fields": {"run_id": state.run_id}})
 
-        self.artifact_manager.write_json(state.task_id, "final_summary.json", state.to_dict())
-        LOGGER.info(
-            "workflow_finished",
-            extra={"extra_fields": {"task_id": state.task_id, "status": state.final_status.value}},
-        )
+        persistence.save(state)
+        self.artifact_manager.write_json(state.run_id, "state.json", state.to_dict())
+        self.artifact_manager.write_json(state.run_id, "final_summary.json", state.to_dict())
+        self.audit_logger.record("workflow_finished", {"run_id": state.run_id, "status": state.final_status.value})
         return state
 
-    async def _run_plan_only(self, store: WorkflowStateStore) -> None:
+    def resume(self, run_id: str) -> WorkflowState:
+        run_dir = self.context.resolved_artifact_root() / run_id
+        persistence = StatePersistence(run_dir=run_dir)
+        state = persistence.load()
+        state.add_event("resumed")
+        self.audit_logger = AuditLogger(run_dir=run_dir)
+        self.audit_logger.record("workflow_resumed", {"run_id": run_id, "phase": state.current_phase})
+        persistence.save(state)
+        return state
+
+    def status(self, run_id: str) -> WorkflowState:
+        run_dir = self.context.resolved_artifact_root() / run_id
+        return StatePersistence(run_dir=run_dir).load()
+
+    def read_audit(self, run_id: str) -> list[dict[str, Any]]:
+        run_dir = self.context.resolved_artifact_root() / run_id
+        return AuditLogger(run_dir=run_dir).read_all()
+
+    async def deploy_staging(self, run_id: str) -> WorkflowState:
+        state = self.status(run_id)
+        decision = self.policy_engine.evaluate(ActionType.DEPLOY_STAGING, RoleName.DEPLOYER)
+        state.add_policy_decision(decision)
+        if not decision.allowed:
+            state.block(decision.reason)
+            self._persist_state(state)
+            return state
+
+        if state.final_status not in {WorkflowStatus.COMPLETED, WorkflowStatus.RUNNING}:
+            state.block("staging deploy requires successful workflow state")
+            self._persist_state(state)
+            return state
+
+        if not state.deploy_plan:
+            deploy_plan = await self._role_run(RoleName.DEPLOYER, self.deployer, self._deploy_prompt(state, target="staging"))
+            state.deploy_plan = deploy_plan
+            self.artifact_manager.write_text(state.run_id, "deploy_plan.md", deploy_plan)
+
+        self.audit_logger = AuditLogger(run_dir=self.context.resolved_artifact_root() / run_id)
+        self.audit_logger.record("deploy_staging_prepared", {"run_id": run_id})
+        self._persist_state(state)
+        return state
+
+    async def deploy_production(self, run_id: str) -> WorkflowState:
+        state = self.status(run_id)
+        decision = self.policy_engine.evaluate(ActionType.DEPLOY_PRODUCTION, RoleName.DEPLOYER)
+        state.add_policy_decision(decision)
+        if not decision.allowed:
+            state.block(decision.reason)
+            self._persist_state(state)
+            return state
+
+        if state.human_approval_required:
+            state.block("human approval required before production deploy")
+            self._persist_state(state)
+            return state
+
+        if not state.rollback_plan:
+            state.rollback_plan = "Prepare rollback by redeploying previous healthy release and verifying health checks."
+            self.artifact_manager.write_text(state.run_id, "rollback_plan.md", state.rollback_plan)
+
+        self.audit_logger = AuditLogger(run_dir=self.context.resolved_artifact_root() / run_id)
+        self.audit_logger.record("deploy_production_candidate", {"run_id": run_id})
+        self._persist_state(state)
+        return state
+
+    async def _run_plan(self, store: WorkflowStateStore) -> None:
         store.mark_phase("plan")
-        plan = await self._role_run("planner", self.planner, self._planner_prompt(store.state.original_request))
+        store.state.checkpoint("plan")
+        plan = await self._role_run(RoleName.PLANNER, self.planner, self._planner_prompt(store.state.original_request))
         store.set_plan(plan)
-        self.artifact_manager.write_text(store.state.task_id, "plan.md", plan)
+        self.artifact_manager.write_text(store.state.run_id, "plan.md", plan)
+        self._persist_state(store.state)
 
-    async def _run_validate_only(self, store: WorkflowStateStore) -> None:
+    async def _run_validate(self, store: WorkflowStateStore) -> None:
         store.mark_phase("validate")
-        validation = self._run_validation_commands()
+        validation = self._run_validation_commands(store.state)
         self._record_validation(store, validation)
-
-        review_text = await self._role_run("reviewer", self.reviewer, self._review_prompt(store.state, "Validation-only run."))
+        review_text = await self._role_run(RoleName.REVIEWER, self.reviewer, self._review_prompt(store.state, "validation-only"))
         findings = parse_review_findings(review_text)
         self._record_review(store, findings)
+        self._persist_state(store.state)
 
-        release_notes = await self._role_run("release_manager", self.release_manager, self._release_prompt(store.state))
-        store.set_release_notes(release_notes)
-        self.artifact_manager.write_text(store.state.task_id, "release_notes.md", release_notes)
-
-    async def _run_review_only(self, store: WorkflowStateStore) -> None:
+    async def _run_review(self, store: WorkflowStateStore) -> None:
         store.mark_phase("review")
         diff_text = git_diff(self.context).stdout
-        review_text = await self._role_run("reviewer", self.reviewer, self._review_prompt(store.state, diff_text))
+        review_text = await self._role_run(RoleName.REVIEWER, self.reviewer, self._review_prompt(store.state, diff_text))
         findings = parse_review_findings(review_text)
         self._record_review(store, findings)
-
-        release_notes = await self._role_run("release_manager", self.release_manager, self._release_prompt(store.state))
+        release_notes = await self._role_run(RoleName.RELEASE_MANAGER, self.release_manager, self._release_prompt(store.state))
         store.set_release_notes(release_notes)
-        self.artifact_manager.write_text(store.state.task_id, "release_notes.md", release_notes)
+        self.artifact_manager.write_text(store.state.run_id, "release_notes.md", release_notes)
+        self._persist_state(store.state)
 
-    async def _run_feature_or_bugfix(
-        self,
-        store: WorkflowStateStore,
-        allow_commit: bool,
-        allow_staging_deploy: bool,
-        enable_tester_mcp: bool,
-    ) -> None:
+    async def _run_feature_or_bugfix(self, store: WorkflowStateStore, allow_commit: bool, enable_tester_mcp: bool) -> None:
+        store.mark_phase("triage")
+        triage_output = await self._role_run(RoleName.TRIAGE, self.triage, f"Classify and sequence workflow for request: {store.state.original_request}")
+        self.audit_logger.record("triage", {"output": triage_output[:500]})
+
         store.mark_phase("plan")
-        plan = await self._role_run("planner", self.planner, self._planner_prompt(store.state.original_request))
+        plan = await self._role_run(RoleName.PLANNER, self.planner, self._planner_prompt(store.state.original_request))
         store.set_plan(plan)
-        self.artifact_manager.write_text(store.state.task_id, "plan.md", plan)
+        self.artifact_manager.write_text(store.state.run_id, "plan.md", plan)
 
-        if self.context.dry_run:
-            codex_context = _noop_async_context()
-        else:
-            codex_context = codex_mcp_server()
+        store.mark_phase("architecture")
+        architecture = await self._role_run(RoleName.ARCHITECT, self.architect, self._architect_prompt(store.state))
+        self.artifact_manager.write_text(store.state.run_id, "architecture_review.md", architecture)
 
-        async with codex_context as codex_server:
-            if codex_server is not None:
-                self._apply_role_mcp_access(enable_tester_mcp=enable_tester_mcp, codex_server=codex_server)
-            else:
-                self._apply_role_mcp_access(enable_tester_mcp=False, codex_server=None)
+        async with self._codex_context() as codex_server:
+            self._apply_role_mcp_access(enable_tester_mcp, codex_server)
 
             while True:
                 store.state.fix_iteration_count += 1
-                store.mark_phase(f"implement_{store.state.fix_iteration_count}")
-                implementation = await self._role_run("developer", self.developer, self._developer_prompt(store.state))
-                self.artifact_manager.write_text(store.state.task_id, "implementation.md", implementation)
+                store.state.checkpoint(f"implementation_{store.state.fix_iteration_count}")
+                implementation = await self._role_run(RoleName.DEVELOPER, self.developer, self._developer_prompt(store.state))
+                self.artifact_manager.write_text(store.state.run_id, "implementation.md", implementation)
 
                 changed_files = git_collect_changed_files(self.context)
                 store.set_changed_files(changed_files)
-                self.artifact_manager.write_json(store.state.task_id, "changed_files.json", {"files": changed_files})
+                self.artifact_manager.write_json(store.state.run_id, "changed_files.json", {"files": changed_files})
 
-                validation = self._run_validation_commands()
+                sensitive = classify_sensitive_changes(changed_files)
+                self.artifact_manager.write_json(
+                    store.state.run_id,
+                    "sensitivity_report.json",
+                    {
+                        "sensitive_files": sensitive.sensitive_files,
+                        "categories": sensitive.categories,
+                        "requires_security_review": sensitive.requires_security_review,
+                    },
+                )
+
+                validation = self._run_validation_commands(store.state)
                 self._record_validation(store, validation)
                 if should_rework_from_validation(validation):
-                    store.state.fix_iteration_reason = "validation_failed"
+                    store.set_fix_iteration_reason("validation_failed")
                     if can_retry(store.state, self.max_fix_iterations):
                         continue
-                    raise RuntimeError("Validation failed after max fix iterations.")
+                    raise RuntimeError("validation failed after maximum retries")
 
-                review_text = await self._role_run("reviewer", self.reviewer, self._review_prompt(store.state, git_diff(self.context).stdout))
+                review_text = await self._role_run(RoleName.REVIEWER, self.reviewer, self._review_prompt(store.state, git_diff(self.context).stdout))
                 findings = parse_review_findings(review_text)
                 self._record_review(store, findings)
 
+                if sensitive.requires_security_review:
+                    security_output = await self._role_run(
+                        RoleName.SECURITY_REVIEWER,
+                        self.security_reviewer,
+                        self._security_prompt(store.state, sensitive.categories),
+                    )
+                    security_findings = parse_review_findings(security_output)
+                    self._record_security_review(store.state, security_findings)
+                    if any(item.blocking for item in security_findings):
+                        store.set_fix_iteration_reason("security_review_blocked")
+                        if can_retry(store.state, self.max_fix_iterations):
+                            continue
+                        raise RuntimeError("security review has blocking findings")
+
                 if should_rework_from_review(findings):
-                    store.state.fix_iteration_reason = "blocking_review_findings"
+                    store.set_fix_iteration_reason("review_blocked")
                     if can_retry(store.state, self.max_fix_iterations):
                         continue
-                    raise RuntimeError("Blocking review findings remain after max fix iterations.")
+                    raise RuntimeError("review has blocking findings")
                 break
 
         validation_summary = f"lint={store.state.lint_result.exit_code if store.state.lint_result else 'n/a'}, tests={store.state.test_result.exit_code if store.state.test_result else 'n/a'}"
@@ -196,27 +296,43 @@ class WorkflowEngine:
             branch_name=store.state.branch_name,
             create_branch=bool(store.state.branch_name),
             validation_summary=validation_summary,
+            use_worktree=self.context.use_worktree,
+            run_id=store.state.run_id,
         )
         store.state.branch_name = git_plan.branch_name
-        self.artifact_manager.write_text(store.state.task_id, "pr_draft.md", git_plan.pr_body)
-        self.artifact_manager.write_text(store.state.task_id, "commit_message.txt", git_plan.commit_message)
+        store.state.worktree_path = git_plan.worktree_path
+        self.artifact_manager.write_text(store.state.run_id, "pr_draft.md", git_plan.pr_body)
+        self.artifact_manager.write_text(store.state.run_id, "commit_message.txt", git_plan.commit_message)
+        self.artifact_manager.write_text(store.state.run_id, "diff_summary.md", git_plan.diff_summary)
 
         if allow_commit:
-            self._commit_changes(commit_message=git_plan.commit_message)
+            commit_decision = self.policy_engine.evaluate(ActionType.COMMIT, RoleName.DEVELOPER)
+            store.state.add_policy_decision(commit_decision)
+            if commit_decision.allowed:
+                self._commit_changes(git_plan.commit_message)
 
-        release_notes = await self._role_run("release_manager", self.release_manager, self._release_prompt(store.state))
+        release_notes = await self._role_run(RoleName.RELEASE_MANAGER, self.release_manager, self._release_prompt(store.state))
         store.set_release_notes(release_notes)
-        self.artifact_manager.write_text(store.state.task_id, "release_notes.md", release_notes)
+        self.artifact_manager.write_text(store.state.run_id, "release_notes.md", release_notes)
 
-        if allow_staging_deploy and self.context.allow_staging_deploy:
-            deploy_plan = await self._role_run("deployer", self.deployer, self._deploy_prompt(store.state))
-            store.set_deploy_plan(deploy_plan)
-            self.artifact_manager.write_text(store.state.task_id, "deploy_plan.md", deploy_plan)
+        deploy_plan = await self._role_run(RoleName.DEPLOYER, self.deployer, self._deploy_prompt(store.state, target="staging"))
+        store.set_deploy_plan(deploy_plan)
+        self.artifact_manager.write_text(store.state.run_id, "deploy_plan.md", deploy_plan)
 
-    def _run_validation_commands(self) -> ValidationSummary:
+        rollback_plan = "Rollback: redeploy previous stable build, run smoke checks, and verify key metrics."
+        store.state.rollback_plan = rollback_plan
+        self.artifact_manager.write_text(store.state.run_id, "rollback_plan.md", rollback_plan)
+        self._persist_state(store.state)
+
+    def _run_validation_commands(self, state: WorkflowState) -> ValidationSummary:
+        lint_decision = self.policy_engine.evaluate(ActionType.RUN_SHELL, RoleName.TESTER)
+        state.add_policy_decision(lint_decision)
+        if not lint_decision.allowed:
+            raise PermissionError(lint_decision.reason)
+
         lint_result = run_lint(self.context)
-        test_result = run_tests(self.context)
-        return ValidationSummary(lint=lint_result, tests=test_result)
+        tests_result = run_tests(self.context)
+        return ValidationSummary(lint=lint_result, tests=tests_result)
 
     def _record_validation(self, store: WorkflowStateStore, validation: ValidationSummary) -> None:
         store.state.lint_result = validation.lint
@@ -229,29 +345,17 @@ class WorkflowEngine:
                 passed=validation.passed,
             )
         )
-        self.artifact_manager.write_json(
-            store.state.task_id,
-            "lint_report.json",
-            _command_result_to_dict(validation.lint) or {},
-        )
-        self.artifact_manager.write_json(
-            store.state.task_id,
-            "test_report.json",
-            _command_result_to_dict(validation.tests) or {},
-        )
+        self.artifact_manager.write_json(store.state.run_id, "lint_report.json", _command_result_to_dict(validation.lint) or {})
+        self.artifact_manager.write_json(store.state.run_id, "test_report.json", _command_result_to_dict(validation.tests) or {})
 
     def _record_review(self, store: WorkflowStateStore, findings: list[Any]) -> None:
         store.state.review_findings = findings
         blocking_count = sum(1 for item in findings if item.blocking)
         store.state.review_history.append(
-            ReviewRecord(
-                timestamp=datetime.now(timezone.utc),
-                findings=findings,
-                blocking_count=blocking_count,
-            )
+            ReviewRecord(timestamp=datetime.now(timezone.utc), findings=findings, blocking_count=blocking_count)
         )
         self.artifact_manager.write_json(
-            store.state.task_id,
+            store.state.run_id,
             "review_report.json",
             {
                 "findings": [
@@ -268,73 +372,110 @@ class WorkflowEngine:
             },
         )
 
-    def _apply_role_mcp_access(self, enable_tester_mcp: bool, codex_server: object) -> None:
-        if ROLE_CAPABILITIES["developer"]["mcp"] and codex_server is not None:
-            self.developer.mcp_servers = [codex_server]
-        else:
-            self.developer.mcp_servers = []
+    def _record_security_review(self, state: WorkflowState, findings: list[Any]) -> None:
+        self.artifact_manager.write_json(
+            state.run_id,
+            "security_review.json",
+            {
+                "findings": [
+                    {
+                        "title": item.title,
+                        "severity": item.severity.value,
+                        "file_path": item.file_path,
+                        "recommendation": item.recommendation,
+                        "blocking": item.blocking,
+                        "details": item.details,
+                    }
+                    for item in findings
+                ]
+            },
+        )
+
+    def _apply_role_mcp_access(self, enable_tester_mcp: bool, codex_server: object | None) -> None:
+        self.developer.mcp_servers = [codex_server] if codex_server is not None else []
         self.tester.mcp_servers = [codex_server] if (enable_tester_mcp and codex_server is not None) else []
         self.planner.mcp_servers = []
+        self.architect.mcp_servers = []
         self.reviewer.mcp_servers = []
+        self.security_reviewer.mcp_servers = []
         self.release_manager.mcp_servers = []
         self.deployer.mcp_servers = []
-
-    async def _role_run(self, role: str, agent: Any, prompt: str) -> str:
-        if self.context.dry_run:
-            return self._dry_run_output(role=role, prompt=prompt)
-        return await self.runner.run(agent, prompt)
-
-    def _dry_run_output(self, role: str, prompt: str) -> str:
-        if role == "reviewer":
-            return "Dry-run review | low | none | false | No blocking findings in simulated mode"
-        return f"[dry-run:{role}] simulated output for prompt length={len(prompt)}"
 
     def _commit_changes(self, commit_message: str) -> None:
         if "git add" not in self.context.allowed_commands:
             self.context.allowed_commands.extend(["git add", "git commit -m"])
-        safe_run_command(self.context, "git add -A", role="developer")
-        safe_run_command(self.context, f"git commit -m \"{commit_message}\"", role="developer")
+        safe_run_command(self.context, "git add -A", role=RoleName.DEVELOPER.value)
+        safe_run_command(self.context, f"git commit -m \"{commit_message}\"", role=RoleName.DEVELOPER.value)
+
+    def _persist_state(self, state: WorkflowState) -> None:
+        StatePersistence(run_dir=state.artifacts_path).save(state)
+        self.artifact_manager.write_json(state.run_id, "state.json", state.to_dict())
+
+    async def _role_run(self, role: RoleName, agent: Any, prompt: str) -> str:
+        action = self._role_action(role)
+        decision = self.policy_engine.evaluate(action, role)
+        self.audit_logger.record("policy_check", {"role": role.value, "allowed": decision.allowed, "reason": decision.reason})
+        if not decision.allowed:
+            raise PermissionError(f"policy denied {role.value}: {decision.reason}")
+        if self.context.dry_run:
+            return self._dry_run_output(role=role, prompt=prompt)
+        return await self.runner.run(agent, prompt)
+
+    def _role_action(self, role: RoleName) -> ActionType:
+        mapping = {
+            RoleName.DEVELOPER: ActionType.EDIT_FILE,
+            RoleName.TESTER: ActionType.RUN_SHELL,
+            RoleName.DEPLOYER: ActionType.DEPLOY_STAGING,
+            RoleName.RELEASE_MANAGER: ActionType.CREATE_PR_DRAFT,
+        }
+        return mapping.get(role, ActionType.CREATE_BRANCH)
+
+    def _dry_run_output(self, role: RoleName, prompt: str) -> str:
+        if role in {RoleName.REVIEWER, RoleName.SECURITY_REVIEWER}:
+            return "Dry run finding | low | none | false | No blocking findings in simulation"
+        return f"[dry-run:{role.value}] simulated output for prompt length={len(prompt)}"
+
+    @asynccontextmanager
+    async def _codex_context(self) -> AsyncIterator[object | None]:
+        if self.context.dry_run:
+            yield None
+            return
+
+        async with codex_mcp_server() as server:
+            yield server
 
     def _planner_prompt(self, request: str) -> str:
-        rules = "\n".join(f"- {rule}" for rule in self.plugin.project_rules())
-        return (
-            f"Request:\n{request}\n\n"
-            f"Repository: {self.context.repo_path}\n"
-            "Create implementation plan with acceptance criteria, risks, and test strategy.\n"
-            f"Project rules:\n{rules}"
-        )
+        return f"Create a plan with acceptance criteria, risks, and validation strategy for request: {request}"
+
+    def _architect_prompt(self, state: WorkflowState) -> str:
+        return f"Review architecture for plan:\n{state.implementation_plan}"
 
     def _developer_prompt(self, state: WorkflowState) -> str:
-        findings = "\n".join(f"- {f.severity.value}: {f.title}" for f in state.review_findings) or "- none"
-        return (
-            f"Original request:\n{state.original_request}\n\n"
-            f"Approved plan:\n{state.implementation_plan}\n\n"
-            f"Known review findings:\n{findings}\n"
-            "Make minimal safe changes and keep scope tight."
-        )
+        return f"Implement request with minimal safe changes:\n{state.original_request}\nPlan:\n{state.implementation_plan}"
 
     def _review_prompt(self, state: WorkflowState, diff_text: str) -> str:
         return (
-            "Review repository changes as a strict reviewer. "
-            "Use structured output lines:\n"
-            "TITLE | SEVERITY | FILE_PATH_OR_NONE | BLOCKING(true/false) | RECOMMENDATION\n\n"
-            f"Changed files: {state.changed_files}\n\n"
-            f"Diff:\n{diff_text[:12000]}"
+            "Review changes with strict structured format: "
+            "TITLE | SEVERITY | FILE_PATH_OR_NONE | BLOCKING(true/false) | RECOMMENDATION\n"
+            f"Changed files: {state.changed_files}\nDiff:\n{diff_text[:12000]}"
+        )
+
+    def _security_prompt(self, state: WorkflowState, categories: list[str]) -> str:
+        return (
+            "Security review required. Output structured findings format. "
+            f"Sensitive categories: {categories}. Changed files: {state.changed_files}"
         )
 
     def _release_prompt(self, state: WorkflowState) -> str:
         return (
-            "Prepare release notes with changed files, validation summary, risk section, and rollback checklist.\n"
-            f"Changed files: {state.changed_files}\n"
+            "Prepare release notes with risk summary, validation results, and rollback checklist.\n"
             f"Lint exit: {state.lint_result.exit_code if state.lint_result else 'n/a'}\n"
             f"Test exit: {state.test_result.exit_code if state.test_result else 'n/a'}"
         )
 
-    def _deploy_prompt(self, state: WorkflowState) -> str:
+    def _deploy_prompt(self, state: WorkflowState, target: str) -> str:
         return (
-            "Prepare staging-only deployment steps using plugin deploy command. "
-            "Never deploy production automatically. Include rollback and post-deploy checks.\n"
-            f"Staging command: {self.context.deploy_staging_command or 'not configured'}\n"
+            f"Prepare deployment plan for {target}. Include health checks, rollback strategy, and verification steps.\n"
             f"Changed files: {state.changed_files}"
         )
 
@@ -348,11 +489,3 @@ def _command_result_to_dict(result: Any) -> dict[str, Any] | None:
         "stdout": result.stdout,
         "stderr": result.stderr,
     }
-
-
-class _noop_async_context:
-    async def __aenter__(self):
-        return None
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
