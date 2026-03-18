@@ -51,6 +51,9 @@ class StatePersistence:
         state.deploy_plan = payload.get("deploy_plan")
         state.rollback_plan = payload.get("rollback_plan")
         state.production_approval = payload.get("production_approval")
+        state.production_approvals = payload.get("production_approvals", [])
+        state.required_production_approvals = payload.get("required_production_approvals", 2)
+        state.production_approval_validity_minutes = payload.get("production_approval_validity_minutes", 120)
         state.deployment_history = payload.get("deployment_history", [])
         state.rollback_history = payload.get("rollback_history", [])
         return state

@@ -30,6 +30,8 @@ class ProjectContext:
     trust_profile: TrustProfile = TrustProfile.NORMAL_INTERNAL
     autonomy_level: AutonomyLevel = AutonomyLevel.SUGGEST
     environment: EnvironmentType = EnvironmentType.LOCAL
+    production_approval_validity_minutes: int = 120
+    required_production_approvals: int = 2
     use_worktree: bool = False
 
     def resolved_artifact_root(self) -> Path:

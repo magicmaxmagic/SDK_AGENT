@@ -50,7 +50,17 @@ def test_cli_approve_production_parsing() -> None:
             "CHG-4242",
             "--reason",
             "CAB approved",
+            "--expires-in-minutes",
+            "45",
         ]
     )
     assert args.command == "approve-production"
     assert args.approved_by == "oncall.lead"
+    assert args.expires_in_minutes == 45
+
+
+def test_cli_audit_flat_fields_parsing() -> None:
+    parser = _base_parser()
+    args = parser.parse_args(["audit", "--run-id", "run-1", "--flat-fields"])
+    assert args.command == "audit"
+    assert args.flat_fields is True

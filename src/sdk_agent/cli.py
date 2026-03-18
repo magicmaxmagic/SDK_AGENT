@@ -34,6 +34,8 @@ def _base_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-pr-draft", action="store_true")
     parser.add_argument("--allow-staging-deploy", action="store_true")
     parser.add_argument("--allow-production-deploy", action="store_true")
+    parser.add_argument("--production-approval-validity-minutes", type=int, default=120)
+    parser.add_argument("--required-production-approvals", type=int, default=2)
     parser.add_argument("--enable-tester-mcp", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--max-fix-iterations", type=int, default=2)
@@ -63,9 +65,11 @@ def _base_parser() -> argparse.ArgumentParser:
     approve_prod.add_argument("--approved-by", required=True)
     approve_prod.add_argument("--ticket", required=True)
     approve_prod.add_argument("--reason", required=True)
+    approve_prod.add_argument("--expires-in-minutes", type=int, default=None)
 
     audit = sub.add_parser("audit")
     audit.add_argument("--run-id", required=True)
+    audit.add_argument("--flat-fields", action="store_true")
     return parser
 
 
@@ -98,6 +102,8 @@ async def _run_async(args: argparse.Namespace) -> int:
     plugin = _build_plugin(args)
     team = build_team(plugin=plugin, model=args.model, max_fix_iterations=args.max_fix_iterations)
     team.workflow.context.dry_run = args.dry_run
+    team.workflow.context.production_approval_validity_minutes = args.production_approval_validity_minutes
+    team.workflow.context.required_production_approvals = args.required_production_approvals
 
     if args.command in {"feature", "bugfix", "plan", "validate", "review"}:
         request = getattr(args, "request", "") or f"{args.command} workflow"
@@ -140,12 +146,13 @@ async def _run_async(args: argparse.Namespace) -> int:
             approved_by=args.approved_by,
             ticket_id=args.ticket,
             reason=args.reason,
+            expires_in_minutes=args.expires_in_minutes,
         )
         print(json.dumps(state.to_dict(), indent=2, default=str))
         return 0
 
     if args.command == "audit":
-        payload = team.workflow.read_audit(run_id=args.run_id)
+        payload = team.workflow.read_audit(run_id=args.run_id, flat_fields=args.flat_fields)
         print(json.dumps(payload, indent=2, default=str))
         return 0
 

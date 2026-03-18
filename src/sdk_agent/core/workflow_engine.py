@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -93,6 +93,8 @@ class WorkflowEngine:
             branch_name=branch_name,
         )
         state.human_approval_required = True
+        state.required_production_approvals = self.context.required_production_approvals
+        state.production_approval_validity_minutes = self.context.production_approval_validity_minutes
         state.artifacts_path = self.artifact_manager.run_dir(state.run_id)
         self.audit_logger = AuditLogger(run_dir=state.artifacts_path)
         persistence = StatePersistence(run_dir=state.artifacts_path)
@@ -140,12 +142,16 @@ class WorkflowEngine:
         run_dir = self.context.resolved_artifact_root() / run_id
         return StatePersistence(run_dir=run_dir).load()
 
-    def read_audit(self, run_id: str) -> list[dict[str, Any]]:
+    def read_audit(self, run_id: str, flat_fields: bool = False) -> list[dict[str, Any]]:
         run_dir = self.context.resolved_artifact_root() / run_id
-        return AuditLogger(run_dir=run_dir).read_all()
+        logger = AuditLogger(run_dir=run_dir)
+        return logger.read_flat() if flat_fields else logger.read_all()
 
     async def deploy_staging(self, run_id: str) -> WorkflowState:
         state = self.status(run_id)
+        if state.final_status == WorkflowStatus.BLOCKED:
+            state.final_status = WorkflowStatus.RUNNING
+            state.final_decision = None
         decision = self.policy_engine.evaluate(ActionType.DEPLOY_STAGING, RoleName.DEPLOYER)
         state.add_policy_decision(decision)
         if not decision.allowed:
@@ -195,23 +201,63 @@ class WorkflowEngine:
                 action=ActionType.DEPLOY_STAGING.value,
             )
             state.add_event("deploy:staging:succeeded")
+            state.complete()
 
         self._persist_state(state)
         return state
 
-    def approve_production(self, run_id: str, approved_by: str, ticket_id: str, reason: str) -> WorkflowState:
+    def approve_production(
+        self,
+        run_id: str,
+        approved_by: str,
+        ticket_id: str,
+        reason: str,
+        expires_in_minutes: int | None = None,
+    ) -> WorkflowState:
         state = self.status(run_id)
-        state.human_approval_required = False
-        state.production_approval = {
+        now = datetime.now(timezone.utc)
+        validity_minutes = expires_in_minutes or state.production_approval_validity_minutes
+        expires_at = now + timedelta(minutes=validity_minutes)
+
+        active_approvers = {item.get("approved_by") for item in self._active_production_approvals(state)}
+        if approved_by in active_approvers:
+            state.add_error(f"approver '{approved_by}' already has an active approval; distinct approvers required")
+            state.pending_actions = [
+                f"production approval requires {state.required_production_approvals} distinct approvers"
+            ]
+            self._persist_state(state)
+            return state
+
+        approval = {
             "approved_by": approved_by,
             "ticket_id": ticket_id,
             "reason": reason,
-            "approved_at": datetime.now(timezone.utc).isoformat(),
+            "approved_at": now.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "validity_minutes": validity_minutes,
         }
+        state.production_approval = approval
+        state.production_approvals.append(approval)
+        active_count = len(self._active_production_approvals(state))
+        state.human_approval_required = active_count < state.required_production_approvals
+        if state.human_approval_required:
+            state.pending_actions = [
+                f"production approval requires {state.required_production_approvals} distinct approvers, {active_count} active so far"
+            ]
+        else:
+            state.pending_actions = []
+
         self.audit_logger = AuditLogger(run_dir=self.context.resolved_artifact_root() / run_id)
         self.audit_logger.record(
             "policy_production_approved",
-            {"run_id": run_id, "approved_by": approved_by, "ticket_id": ticket_id},
+            {
+                "run_id": run_id,
+                "approved_by": approved_by,
+                "ticket_id": ticket_id,
+                "expires_at": expires_at.isoformat(),
+                "active_approvals": active_count,
+                "required_approvals": state.required_production_approvals,
+            },
             status="success",
             role=RoleName.POLICY_ENFORCER.value,
             action=ActionType.DEPLOY_PRODUCTION.value,
@@ -221,6 +267,9 @@ class WorkflowEngine:
 
     async def deploy_production(self, run_id: str) -> WorkflowState:
         state = self.status(run_id)
+        if state.final_status == WorkflowStatus.BLOCKED:
+            state.final_status = WorkflowStatus.RUNNING
+            state.final_decision = None
         decision = self.policy_engine.evaluate(ActionType.DEPLOY_PRODUCTION, RoleName.DEPLOYER)
         state.add_policy_decision(decision)
         if not decision.allowed:
@@ -228,12 +277,20 @@ class WorkflowEngine:
             self._persist_state(state)
             return state
 
-        if state.human_approval_required or not state.production_approval:
-            state.block("human approval required before production deploy")
+        active_approvals = self._active_production_approvals(state)
+        if state.human_approval_required or len(active_approvals) < state.required_production_approvals:
+            state.block(
+                "human approval required before production deploy "
+                f"({len(active_approvals)}/{state.required_production_approvals} active approvals)"
+            )
             self.audit_logger = AuditLogger(run_dir=self.context.resolved_artifact_root() / run_id)
             self.audit_logger.record(
                 "policy_production_approval_missing",
-                {"run_id": run_id},
+                {
+                    "run_id": run_id,
+                    "active_approvals": len(active_approvals),
+                    "required_approvals": state.required_production_approvals,
+                },
                 status="failure",
                 role=RoleName.POLICY_ENFORCER.value,
                 action=ActionType.DEPLOY_PRODUCTION.value,
@@ -256,8 +313,8 @@ class WorkflowEngine:
                 "exit_code": deploy_result.exit_code,
                 "stdout": deploy_result.stdout,
                 "stderr": deploy_result.stderr,
-                "approved_by": state.production_approval.get("approved_by") if state.production_approval else None,
-                "approval_ticket": state.production_approval.get("ticket_id") if state.production_approval else None,
+                "approved_by": [item.get("approved_by") for item in active_approvals],
+                "approval_tickets": [item.get("ticket_id") for item in active_approvals],
             }
         )
         if deploy_result.exit_code != 0:
@@ -279,9 +336,35 @@ class WorkflowEngine:
                 action=ActionType.DEPLOY_PRODUCTION.value,
             )
             state.add_event("deploy:production:succeeded")
+            state.complete()
 
         self._persist_state(state)
         return state
+
+    def _active_production_approvals(self, state: WorkflowState) -> list[dict[str, Any]]:
+        now = datetime.now(timezone.utc)
+        active: list[dict[str, Any]] = []
+        for item in state.production_approvals:
+            expires_at_raw = item.get("expires_at")
+            approved_by = item.get("approved_by")
+            if not expires_at_raw or not approved_by:
+                continue
+            try:
+                expires_at = datetime.fromisoformat(expires_at_raw)
+            except ValueError:
+                continue
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at > now:
+                active.append(item)
+
+        unique_by_user: dict[str, dict[str, Any]] = {}
+        for item in active:
+            approved_by = str(item["approved_by"])
+            previous = unique_by_user.get(approved_by)
+            if previous is None or str(item.get("approved_at", "")) > str(previous.get("approved_at", "")):
+                unique_by_user[approved_by] = item
+        return list(unique_by_user.values())
 
     async def _run_plan(self, store: WorkflowStateStore) -> None:
         store.mark_phase("plan")

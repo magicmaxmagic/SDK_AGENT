@@ -108,8 +108,8 @@ Main operational commands:
 - `status --run-id <id>`
 - `deploy-staging --run-id <id>`
 - `deploy-production --run-id <id>`
-- `approve-production --run-id <id> --approved-by <user> --ticket <id> --reason <text>`
-- `audit --run-id <id>`
+- `approve-production --run-id <id> --approved-by <user> --ticket <id> --reason <text> [--expires-in-minutes <n>]`
+- `audit --run-id <id> [--flat-fields]`
 
 Key options:
 - `--repo-path`
@@ -125,6 +125,8 @@ Key options:
 - `--allow-pr-draft`
 - `--allow-staging-deploy`
 - `--allow-production-deploy`
+- `--production-approval-validity-minutes`
+- `--required-production-approvals`
 - `--dry-run`
 
 ## Usage Examples (uv)
@@ -165,6 +167,12 @@ Add explicit human approval before production deployment:
 uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio approve-production --run-id run-abc123 --approved-by oncall.lead --ticket CHG-4242 --reason "CAB approved"
 ~~~
 
+Second approval for 4-eyes before production deployment:
+
+~~~bash
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio approve-production --run-id run-abc123 --approved-by sre.lead --ticket CHG-4243 --reason "Second approval" --expires-in-minutes 60
+~~~
+
 Deploy to production after approval:
 
 ~~~bash
@@ -177,7 +185,15 @@ Read audit trail:
 uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio audit --run-id run-abc123
 ~~~
 
+Read audit trail with flat ECS-like fields (SIEM ingestion):
+
+~~~bash
+uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio audit --run-id run-abc123 --flat-fields
+~~~
+
 Audit events are SIEM-compatible and versioned (`schema_version=siem.audit.v1`, `event_version=1`) with stable fields such as `event_type`, `run_id`, `correlation_id`, `actor_role`, `action`, and `siem.event.*` mappings.
+
+Production deploy now enforces 4-eyes with expiry-aware approvals. By default, two distinct active approvals are required and each approval is valid for 120 minutes (configurable via CLI options).
 
 Dry-run simulation:
 
