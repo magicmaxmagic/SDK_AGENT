@@ -1,7 +1,17 @@
 import { createServerClient } from "@supabase/ssr";
+import { get } from "@vercel/edge-config";
 import { NextResponse, type NextRequest } from "next/server";
 
 export async function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname === "/welcome") {
+    try {
+      const greeting = await get("greeting");
+      return NextResponse.json({ greeting: greeting ?? "Welcome" });
+    } catch {
+      return NextResponse.json({ greeting: "Welcome" });
+    }
+  }
+
   const response = NextResponse.next({
     request: {
       headers: request.headers,
@@ -45,5 +55,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/api/private/:path*"],
+  matcher: ["/dashboard/:path*", "/api/private/:path*", "/welcome"],
 };
