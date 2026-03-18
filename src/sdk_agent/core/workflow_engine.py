@@ -299,6 +299,18 @@ class WorkflowEngine:
         if not validation.valid:
             state.add_error(validation.reason)
             self.audit_logger = AuditLogger(run_dir=self.context.resolved_artifact_root() / run_id)
+            self.audit_logger.record_ticket_validation(
+                {
+                    "run_id": run_id,
+                    "target": target,
+                    "ticket_id": ticket_id_normalized,
+                    "ticket_source": ticket_source_normalized,
+                    "approved_by": approved_by,
+                    "provider": validation.provider,
+                    "status": "rejected",
+                    "reason": validation.reason,
+                }
+            )
             self.audit_logger.record(
                 f"policy_{target}_approval_rejected",
                 {
@@ -352,6 +364,18 @@ class WorkflowEngine:
             state.pending_actions = []
 
         self.audit_logger = AuditLogger(run_dir=self.context.resolved_artifact_root() / run_id)
+        self.audit_logger.record_ticket_validation(
+            {
+                "run_id": run_id,
+                "target": target,
+                "ticket_id": validation.normalized_ticket_id or ticket_id_normalized,
+                "ticket_source": ticket_source_normalized,
+                "approved_by": approved_by,
+                "provider": validation.provider,
+                "status": "approved",
+                "reason": validation.reason,
+            }
+        )
         self.audit_logger.record(
             f"policy_{target}_approved",
             {

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from sdk_agent.core.audit import AuditLogger
@@ -16,6 +17,10 @@ def test_audit_logging_roundtrip(tmp_path: Path) -> None:
     assert entries[0]["run_id"] == "run-1"
     assert "siem" in entries[0]
     assert entries[0]["siem"]["service.name"] == "sdk_agent"
+    assert "forensics" in entries[0]
+    assert entries[0]["forensics"]["algorithm"] == "sha256"
+    assert entries[0]["forensics"]["chain_hash"]
+    assert entries[1]["forensics"]["prev_hash"] == entries[0]["forensics"]["chain_hash"]
 
 
 def test_audit_logging_flat_export(tmp_path: Path) -> None:
@@ -40,3 +45,20 @@ def test_audit_ndjson_export_rotates_files(tmp_path: Path) -> None:
     for file in files:
         assert file.exists()
         assert file.suffix == ".ndjson"
+
+    manifest = (tmp_path / "run-3" / "siem_exports" / "siem_export_manifest.json")
+    assert manifest.exists()
+
+
+def test_ticket_validation_log_is_chain_signed(tmp_path: Path) -> None:
+    logger = AuditLogger(run_dir=tmp_path / "run-4")
+    logger.record_ticket_validation({"run_id": "run-4", "ticket_id": "CHG-1001", "status": "approved"})
+    logger.record_ticket_validation({"run_id": "run-4", "ticket_id": "CHG-1002", "status": "rejected"})
+
+    lines = logger.ticket_validation_file.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+
+    first = json.loads(lines[0])
+    second = json.loads(lines[1])
+    assert first["forensics"]["chain_hash"]
+    assert second["forensics"]["prev_hash"] == first["forensics"]["chain_hash"]

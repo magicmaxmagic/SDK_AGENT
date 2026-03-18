@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,6 +19,10 @@ class AuditLogger:
     @property
     def audit_file(self) -> Path:
         return self.run_dir / "audit_log.jsonl"
+
+    @property
+    def ticket_validation_file(self) -> Path:
+        return self.run_dir / "ticket_validation_log.jsonl"
 
     def record(
         self,
@@ -51,8 +56,20 @@ class AuditLogger:
                 "labels.schema_version": SCHEMA_VERSION,
             },
         }
-        with self.audit_file.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+        _append_signed_json_line(self.audit_file, payload)
+
+    def record_ticket_validation(self, data: dict[str, Any]) -> None:
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "event_version": EVENT_VERSION,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event": "ticket_validation",
+            "event_type": "ticket_validation",
+            "run_id": str(data.get("run_id", "")) or self.run_dir.name,
+            "data": data,
+        }
+        _append_signed_json_line(self.ticket_validation_file, payload)
 
     def read_all(self) -> list[dict[str, Any]]:
         if not self.audit_file.exists():
@@ -79,14 +96,39 @@ class AuditLogger:
         export_dir.mkdir(parents=True, exist_ok=True)
 
         exported: list[Path] = []
+        export_chain_hash: str | None = None
         chunk: list[dict[str, Any]] = []
         for entry in entries:
             chunk.append(entry)
             if len(chunk) >= batch_size:
-                exported.extend(_write_rotated_chunk(export_dir, chunk, max_file_size_bytes))
+                files, export_chain_hash = _write_rotated_chunk(
+                    export_dir,
+                    chunk,
+                    max_file_size_bytes,
+                    prev_hash=export_chain_hash,
+                )
+                exported.extend(files)
                 chunk = []
         if chunk:
-            exported.extend(_write_rotated_chunk(export_dir, chunk, max_file_size_bytes))
+            files, export_chain_hash = _write_rotated_chunk(
+                export_dir,
+                chunk,
+                max_file_size_bytes,
+                prev_hash=export_chain_hash,
+            )
+            exported.extend(files)
+
+        manifest = {
+            "schema_version": SCHEMA_VERSION,
+            "event_version": EVENT_VERSION,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "algorithm": "sha256",
+            "entry_count": len(entries),
+            "file_count": len(exported),
+            "final_chain_hash": export_chain_hash,
+            "files": [str(path.name) for path in exported],
+        }
+        (export_dir / "siem_export_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=True), encoding="utf-8")
         return exported
 
 
@@ -135,15 +177,24 @@ def _nested_get(payload: dict[str, Any], section: str, key: str) -> Any:
     return value.get(key)
 
 
-def _write_rotated_chunk(export_dir: Path, entries: list[dict[str, Any]], max_file_size_bytes: int) -> list[Path]:
+def _write_rotated_chunk(
+    export_dir: Path,
+    entries: list[dict[str, Any]],
+    max_file_size_bytes: int,
+    *,
+    prev_hash: str | None,
+) -> tuple[list[Path], str | None]:
     files: list[Path] = []
     index = _next_export_index(export_dir)
     current_path = export_dir / f"siem_export_{index:04d}.ndjson"
     current_size = 0
     created_current = False
+    running_hash = prev_hash
 
     for entry in entries:
-        line = json.dumps(entry, ensure_ascii=True) + "\n"
+        signed_entry = _with_chain_signature(entry, previous_hash=running_hash)
+        running_hash = _extract_chain_hash(signed_entry)
+        line = json.dumps(signed_entry, ensure_ascii=True) + "\n"
         line_size = len(line.encode("utf-8"))
         if current_size > 0 and current_size + line_size > max_file_size_bytes:
             if created_current:
@@ -160,7 +211,7 @@ def _write_rotated_chunk(export_dir: Path, entries: list[dict[str, Any]], max_fi
 
     if created_current:
         files.append(current_path)
-    return files
+    return files, running_hash
 
 
 def _next_export_index(export_dir: Path) -> int:
@@ -173,3 +224,50 @@ def _next_export_index(export_dir: Path) -> int:
         return int(suffix) + 1
     except ValueError:
         return len(existing) + 1
+
+
+def _append_signed_json_line(path: Path, payload: dict[str, Any]) -> str:
+    prev_hash = _last_chain_hash(path)
+    signed = _with_chain_signature(payload, previous_hash=prev_hash)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(signed, ensure_ascii=True) + "\n")
+    return _extract_chain_hash(signed)
+
+
+def _with_chain_signature(payload: dict[str, Any], *, previous_hash: str | None) -> dict[str, Any]:
+    materialized = dict(payload)
+    canonical = json.dumps(materialized, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    chain_input = f"{previous_hash or ''}:{canonical}".encode("utf-8")
+    chain_hash = hashlib.sha256(chain_input).hexdigest()
+    materialized["forensics"] = {
+        "algorithm": "sha256",
+        "prev_hash": previous_hash,
+        "chain_hash": chain_hash,
+    }
+    return materialized
+
+
+def _extract_chain_hash(payload: dict[str, Any]) -> str | None:
+    value = payload.get("forensics")
+    if not isinstance(value, dict):
+        return None
+    chain_hash = value.get("chain_hash")
+    if isinstance(chain_hash, str) and chain_hash.strip():
+        return chain_hash
+    return None
+
+
+def _last_chain_hash(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not lines:
+        return None
+    try:
+        payload = json.loads(lines[-1])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return _extract_chain_hash(payload)

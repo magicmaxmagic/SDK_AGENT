@@ -210,7 +210,11 @@ uv run python -m sdk_agent.main --repo-path /home/maxence/Documents/portfolio au
 
 Audit events are SIEM-compatible and versioned (`schema_version=siem.audit.v1`, `event_version=1`) with stable fields such as `event_type`, `run_id`, `correlation_id`, `actor_role`, `action`, and `siem.event.*` mappings.
 
+Forensics reinforcement: audit events, ticket validation logs, and SIEM NDJSON exports are chain-signed (`sha256`) with `forensics.prev_hash`/`forensics.chain_hash`, and SIEM export writes `siem_export_manifest.json` with final chain hash.
+
 Ticket validation now runs through an external connector (`mock`, `jira`, `servicenow`, or `composite`) configured by plugin/project policy. CLI can override via `--ticket-connector` and `--ticket-connector-settings`.
+
+Connector HTTP resilience supports retry/backoff and circuit breaker controls through `--ticket-connector-settings` (for example: `retry_attempts`, `backoff_initial_seconds`, `backoff_multiplier`, `circuit_failure_threshold`, `circuit_reset_seconds`, `timeout_seconds`).
 
 Example Jira HTTP connector override:
 

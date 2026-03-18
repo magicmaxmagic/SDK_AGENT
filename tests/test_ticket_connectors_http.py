@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.error import URLError
 
 from sdk_agent.core import ticket_connectors as connectors
 
@@ -85,3 +86,66 @@ def test_jira_http_connector_reports_missing_ticket(monkeypatch) -> None:
     result = connector.validate("CHG-7777", "jira")
     assert result.valid is False
     assert "not found" in result.reason
+
+
+def test_connector_retries_then_succeeds(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise URLError("temporary")
+        return _FakeResponse({"key": "CHG-4321"})
+
+    monkeypatch.setattr(connectors, "urlopen", fake_urlopen)
+    monkeypatch.setattr(connectors.time, "sleep", lambda _seconds: None)
+    connectors._CIRCUIT_BREAKERS.clear()
+
+    connector = connectors.build_ticket_connector(
+        "jira",
+        {
+            "base_url": "https://jira.example.com",
+            "auth_mode": "bearer",
+            "accepted_sources": ["jira"],
+            "retry_attempts": 3,
+            "backoff_initial_seconds": 0,
+            "circuit_failure_threshold": 5,
+        },
+    )
+
+    result = connector.validate("CHG-4321", "jira")
+    assert result.valid is True
+    assert calls["count"] == 3
+
+
+def test_connector_circuit_breaker_opens_on_repeated_network_failure(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
+        calls["count"] += 1
+        raise URLError("down")
+
+    monkeypatch.setattr(connectors, "urlopen", fake_urlopen)
+    monkeypatch.setattr(connectors.time, "sleep", lambda _seconds: None)
+    connectors._CIRCUIT_BREAKERS.clear()
+
+    connector = connectors.build_ticket_connector(
+        "jira",
+        {
+            "base_url": "https://jira.example.com",
+            "auth_mode": "bearer",
+            "accepted_sources": ["jira"],
+            "retry_attempts": 1,
+            "backoff_initial_seconds": 0,
+            "circuit_failure_threshold": 1,
+            "circuit_reset_seconds": 60,
+        },
+    )
+
+    first = connector.validate("CHG-5000", "jira")
+    second = connector.validate("CHG-5000", "jira")
+
+    assert first.valid is False
+    assert second.valid is False
+    assert "circuit breaker open" in second.reason
+    assert calls["count"] == 1

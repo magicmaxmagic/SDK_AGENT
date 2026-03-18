@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -19,6 +20,15 @@ class TicketValidationResult:
     normalized_ticket_id: str | None = None
     provider: str | None = None
     metadata: dict[str, Any] | None = None
+
+
+@dataclass(slots=True)
+class CircuitBreakerState:
+    consecutive_network_failures: int = 0
+    opened_until_monotonic: float = 0.0
+
+
+_CIRCUIT_BREAKERS: dict[str, CircuitBreakerState] = {}
 
 
 class ChangeTicketConnector(Protocol):
@@ -104,7 +114,13 @@ class JiraTicketConnector:
             password_env_default="JIRA_API_TOKEN",
             default_auth_mode="basic",
         )
-        payload, error = _http_get_json(issue_url, headers=headers, timeout_seconds=_timeout(self.settings))
+        payload, error = _resilient_http_get_json(
+            provider=self.name,
+            base_url=base_url,
+            url=issue_url,
+            headers=headers,
+            settings=self.settings,
+        )
         if error is not None:
             return TicketValidationResult(False, f"jira connector request failed: {error}", provider=self.name)
 
@@ -157,7 +173,13 @@ class ServiceNowTicketConnector:
             password_env_default="SERVICENOW_PASSWORD",
             default_auth_mode="basic",
         )
-        payload, error = _http_get_json(issue_url, headers=headers, timeout_seconds=_timeout(self.settings))
+        payload, error = _resilient_http_get_json(
+            provider=self.name,
+            base_url=base_url,
+            url=issue_url,
+            headers=headers,
+            settings=self.settings,
+        )
         if error is not None:
             return TicketValidationResult(False, f"servicenow connector request failed: {error}", provider=self.name)
 
@@ -275,27 +297,123 @@ def _build_auth_headers(
 
 
 def _http_get_json(url: str, *, headers: dict[str, str], timeout_seconds: float) -> tuple[dict[str, Any] | list[Any] | None, str | None]:
+    payload, error, _ = _http_get_json_once(url, headers=headers, timeout_seconds=timeout_seconds)
+    return payload, error
+
+
+def _http_get_json_once(
+    url: str,
+    *,
+    headers: dict[str, str],
+    timeout_seconds: float,
+) -> tuple[dict[str, Any] | list[Any] | None, str | None, str | None]:
     request = Request(url=url, headers=headers, method="GET")
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
             status = getattr(response, "status", 200)
             body = response.read().decode("utf-8")
     except HTTPError as exc:
-        return None, f"HTTP {exc.code}"
+        transient = "network" if exc.code in {408, 425, 429, 500, 502, 503, 504} else "http"
+        return None, f"HTTP {exc.code}", transient
     except URLError as exc:
-        return None, f"network error: {exc.reason}"
+        return None, f"network error: {exc.reason}", "network"
     except OSError as exc:
-        return None, f"transport error: {exc}"
+        return None, f"transport error: {exc}", "network"
 
     if status < 200 or status >= 300:
-        return None, f"HTTP {status}"
+        transient = "network" if status in {408, 425, 429, 500, 502, 503, 504} else "http"
+        return None, f"HTTP {status}", transient
 
     if not body.strip():
-        return None, "empty response"
+        return None, "empty response", "data"
     try:
         payload = json.loads(body)
     except json.JSONDecodeError:
-        return None, "invalid JSON response"
+        return None, "invalid JSON response", "data"
     if not isinstance(payload, (dict, list)):
-        return None, "unexpected payload type"
-    return payload, None
+        return None, "unexpected payload type", "data"
+    return payload, None, None
+
+
+def _resilient_http_get_json(
+    *,
+    provider: str,
+    base_url: str,
+    url: str,
+    headers: dict[str, str],
+    settings: dict[str, Any],
+) -> tuple[dict[str, Any] | list[Any] | None, str | None]:
+    max_attempts = _int_setting(settings, "retry_attempts", default=3, minimum=1)
+    backoff_initial = _float_setting(settings, "backoff_initial_seconds", default=0.2, minimum=0.0)
+    backoff_multiplier = _float_setting(settings, "backoff_multiplier", default=2.0, minimum=1.0)
+    failure_threshold = _int_setting(settings, "circuit_failure_threshold", default=3, minimum=1)
+    reset_seconds = _float_setting(settings, "circuit_reset_seconds", default=30.0, minimum=1.0)
+    timeout_seconds = _timeout(settings)
+
+    breaker_key = _circuit_breaker_key(provider, base_url)
+    if _circuit_is_open(breaker_key):
+        return None, "circuit breaker open: temporary block due to repeated network failures"
+
+    delay = backoff_initial
+    last_error = "request failed"
+    for attempt in range(max_attempts):
+        payload, error, error_kind = _http_get_json_once(url, headers=headers, timeout_seconds=timeout_seconds)
+        if error is None:
+            _circuit_record_success(breaker_key)
+            return payload, None
+
+        last_error = error
+        if error_kind != "network":
+            return None, error
+
+        if attempt < (max_attempts - 1) and delay > 0:
+            time.sleep(delay)
+            delay *= backoff_multiplier
+
+    _circuit_record_network_failure(breaker_key, threshold=failure_threshold, reset_seconds=reset_seconds)
+    return None, last_error
+
+
+def _circuit_breaker_key(provider: str, base_url: str) -> str:
+    return f"{provider}:{base_url.strip().lower()}"
+
+
+def _circuit_is_open(key: str) -> bool:
+    state = _CIRCUIT_BREAKERS.get(key)
+    if state is None:
+        return False
+    return state.opened_until_monotonic > time.monotonic()
+
+
+def _circuit_record_success(key: str) -> None:
+    _CIRCUIT_BREAKERS.pop(key, None)
+
+
+def _circuit_record_network_failure(key: str, *, threshold: int, reset_seconds: float) -> None:
+    state = _CIRCUIT_BREAKERS.get(key)
+    if state is None:
+        state = CircuitBreakerState()
+        _CIRCUIT_BREAKERS[key] = state
+
+    state.consecutive_network_failures += 1
+    if state.consecutive_network_failures >= threshold:
+        state.opened_until_monotonic = time.monotonic() + reset_seconds
+        state.consecutive_network_failures = 0
+
+
+def _int_setting(settings: dict[str, Any], key: str, *, default: int, minimum: int) -> int:
+    raw = settings.get(key, default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, value)
+
+
+def _float_setting(settings: dict[str, Any], key: str, *, default: float, minimum: float) -> float:
+    raw = settings.get(key, default)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, value)
