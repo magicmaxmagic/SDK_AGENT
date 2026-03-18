@@ -1,22 +1,25 @@
 from __future__ import annotations
 
-from sdk_agent.context import ProjectContext
 from sdk_agent.core.base_agent import BaseAgentFactory
+from sdk_agent.plugins.base import BaseProjectPlugin
 
 
 def make_developer_agent(
     factory: BaseAgentFactory,
-    context: ProjectContext,
-    mcp_servers: list | None = None,
+    plugin: BaseProjectPlugin,
 ):
+    context = plugin.to_context()
+    allowed = "\n".join(f"- {cmd}" for cmd in context.allowed_commands)
     instructions = (
         f"You are the Developer for project '{context.project_name}'. "
-        f"Repository path: {context.repo_path}. "
-        "Use MCP-backed Codex tools to inspect and modify code. "
-        "Implement the smallest safe diff, reuse existing patterns, and avoid unrelated changes."
+        f"Repository path: {context.repo_path}.\n"
+        "Use Codex MCP tools to implement approved plan with minimal diff.\n"
+        "Never deploy to production. Never push directly to main.\n"
+        "Keep code style and architecture consistent with the repository.\n"
+        "Allowed deterministic commands:\n"
+        f"{allowed}"
     )
     return factory.create(
         name="Developer",
         instructions=instructions,
-        mcp_servers=mcp_servers,
     )

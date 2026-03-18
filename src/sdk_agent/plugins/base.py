@@ -1,22 +1,50 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
+from pathlib import Path
+
 from sdk_agent.context import ProjectContext
 
 
-@dataclass
+@dataclass(slots=True)
 class BaseProjectPlugin:
-    context: ProjectContext
+    """Base plugin carrying project rules and deterministic tool constraints."""
 
-    def get_context(self) -> ProjectContext:
-        return self.context
+    project_name: str
+    repo_path: Path
+    artifact_root: Path = Path(".sdk_agent_runs")
 
-    def get_shared_tools(self) -> list:
-        return []
+    def allowed_commands(self) -> list[str]:
+        return ["git status", "git diff", "pytest", "ruff check", "npm test", "npm run lint"]
 
-    def get_role_tools(self) -> dict[str, list]:
-        return {}
+    def lint_command(self) -> str:
+        return "python -m compileall -q src tests"
 
-    def get_role_instruction_suffixes(self) -> dict[str, str]:
-        return {}
+    def test_command(self) -> str:
+        return "pytest -q"
 
-    def get_workflow_prompt_overrides(self) -> dict[str, str]:
-        return {}
+    def build_command(self) -> str | None:
+        return None
+
+    def deploy_staging_command(self) -> str | None:
+        return None
+
+    def project_rules(self) -> list[str]:
+        return [
+            "Keep diffs small and focused.",
+            "Do not modify unrelated files.",
+            "Never deploy to production automatically.",
+        ]
+
+    def to_context(self) -> ProjectContext:
+        return ProjectContext(
+            project_name=self.project_name,
+            repo_path=self.repo_path,
+            lint_command=self.lint_command(),
+            test_command=self.test_command(),
+            build_command=self.build_command(),
+            deploy_staging_command=self.deploy_staging_command(),
+            artifact_root=self.artifact_root,
+            project_rules=self.project_rules(),
+            allowed_commands=self.allowed_commands(),
+        )

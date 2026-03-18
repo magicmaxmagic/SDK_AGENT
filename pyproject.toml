@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sdk-agent"
 version = "0.1.0"
-description = "Reusable multi-agent SDK powered by OpenAI Agents SDK and Codex MCP"
+description = "Reusable multi-agent software delivery platform with OpenAI Agents SDK and Codex MCP"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
   "openai-agents>=0.12.0"
 ]
@@ -18,7 +18,7 @@ dev = [
 ]
 
 [project.scripts]
-sdk-agent = "sdk_agent.main:main"
+sdk-agent = "sdk_agent.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

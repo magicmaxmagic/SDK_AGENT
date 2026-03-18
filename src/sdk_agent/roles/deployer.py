@@ -1,25 +1,23 @@
 from __future__ import annotations
 
-from sdk_agent.context import ProjectContext
 from sdk_agent.core.base_agent import BaseAgentFactory
+from sdk_agent.plugins.base import BaseProjectPlugin
 
 
 def make_deployer_agent(
     factory: BaseAgentFactory,
-    context: ProjectContext,
-    mcp_servers: list | None = None,
+    plugin: BaseProjectPlugin,
 ):
+    context = plugin.to_context()
     staging = context.deploy_staging_command or "No staging deploy command configured."
-    production = context.deploy_production_command or "No production command configured."
 
     instructions = (
         f"You are the Deployer for project '{context.project_name}'. "
-        f"Staging command: {staging}. Production command: {production}. "
-        "Prepare deploy steps, rollback strategy, and post-deploy verification. "
-        "Never execute or recommend automatic production deployment."
+        f"Staging command: {staging}.\n"
+        "Prepare deployment instructions for staging only, with rollback and post-deploy checks.\n"
+        "Never trigger production deployment, never recommend auto production rollout."
     )
     return factory.create(
         name="Deployer",
         instructions=instructions,
-        mcp_servers=mcp_servers,
     )

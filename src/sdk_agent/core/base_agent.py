@@ -1,31 +1,32 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass(slots=True)
 class BaseAgentFactory:
-    def __init__(self, model: str | None = None):
-        self.model = model
+    """Factory for OpenAI Agents with explicit role-scoped capabilities."""
+
+    model: str
 
     def create(
         self,
         name: str,
         instructions: str,
-        mcp_servers: list | None = None,
-        tools: list | None = None,
-        handoffs: list | None = None,
-    ):
+        mcp_servers: list[Any] | None = None,
+        tools: list[Any] | None = None,
+    ) -> Any:
         from agents import Agent
 
-        kwargs: dict = {
+        kwargs: dict[str, Any] = {
             "name": name,
             "instructions": instructions,
+            "model": self.model,
         }
-
-        if self.model:
-            kwargs["model"] = self.model
         if mcp_servers:
             kwargs["mcp_servers"] = mcp_servers
         if tools:
             kwargs["tools"] = tools
-        if handoffs:
-            kwargs["handoffs"] = handoffs
 
         return Agent(**kwargs)
