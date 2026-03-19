@@ -371,6 +371,11 @@ Secrets GitHub a configurer pour le deploy Vercel:
 - `VERCEL_ORG_ID`
 - `VERCEL_PROJECT_ID`
 
+Secret GitHub optionnel pour bootstrap SQL automatique Supabase au deploy:
+- `SUPABASE_DB_URL` (chaine PostgreSQL complete, avec sslmode=require)
+
+Quand `SUPABASE_DB_URL` est configure, le pipeline execute `apps/web/supabase/saas.sql` avant le deploy production si le schema SaaS n'existe pas encore.
+
 Durcissement recommande (GitHub Settings):
 1. Branch protection sur `main`: activer `Require a pull request before merging`.
 2. Branch protection sur `main`: activer `Require status checks to pass before merging`.
