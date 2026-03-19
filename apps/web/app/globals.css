@@ -65,6 +65,14 @@ input {
   padding: 0.65rem 0.75rem;
 }
 
+select {
+  width: 100%;
+  border: 1px solid #d9ccbb;
+  background: #fffcf5;
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+}
+
 .form-row {
   display: grid;
   gap: 0.35rem;
@@ -87,8 +95,94 @@ input {
   font-size: 0.8rem;
 }
 
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.dashboard-columns {
+  display: grid;
+  grid-template-columns: 1.6fr 1fr;
+  gap: 0.9rem;
+}
+
+.stat-card {
+  min-height: 132px;
+}
+
+.muted-label {
+  color: var(--muted);
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0.35rem 0;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.notes-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.note-item {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  background: #fff7ea;
+  border: 1px solid #eddcc4;
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+}
+
+.note-id {
+  color: var(--accent-2);
+  font-weight: 700;
+  min-width: 2.2rem;
+}
+
+.note-form {
+  align-self: start;
+}
+
+.form-stack {
+  display: grid;
+  gap: 0.9rem;
+  align-content: start;
+}
+
+.success-text {
+  color: #0f6d2e;
+  margin-top: 0.7rem;
+}
+
+.error-text {
+  color: #9d2331;
+  margin-top: 0.7rem;
+}
+
 @media (max-width: 640px) {
   main {
     padding: 1.2rem 0.9rem 2rem;
+  }
+
+  .dashboard-grid,
+  .dashboard-columns {
+    grid-template-columns: 1fr;
   }
 }

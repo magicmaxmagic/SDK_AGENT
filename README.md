@@ -324,6 +324,10 @@ Fonctionnalites incluses:
 - route backend privee (`/api/private`) qui exige une session Supabase
 - middleware de protection pour les routes privees
 
+Bootstrap base SaaS multi-tenant (organizations/projects/memberships/subscriptions):
+- Executer `apps/web/supabase/saas.sql` dans l'editeur SQL Supabase.
+- Script notes simple disponible aussi: `apps/web/supabase/notes.sql`.
+
 ### Variables d'environnement
 
 Copie `apps/web/.env.example` vers `apps/web/.env.local` puis configure:
